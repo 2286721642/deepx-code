@@ -104,6 +104,12 @@ func Load() (*Config, error) {
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("解析 %s: %w", p, err)
 	}
+	if c.Flash.ContextWindow <= 0 {
+		c.Flash.ContextWindow = defaultContextWindow(c.Flash.Model)
+	}
+	if c.Pro.ContextWindow <= 0 {
+		c.Pro.ContextWindow = defaultContextWindow(c.Pro.Model)
+	}
 	return &c, nil
 }
 
