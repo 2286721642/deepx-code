@@ -50,6 +50,12 @@ type metaFile struct {
 	LastSeenAt time.Time `json:"last_seen_at"`
 }
 
+// stateFile 是 ~/.deepx/sessions/{sid}/state.json 的结构。
+type stateFile struct {
+	Summary    string `json:"summary"`    // 会话压缩摘要
+	TotalTurns int    `json:"total_turns"` // 当前有效 user 轮数
+}
+
 // New 给指定 workspace 创建/打开 session。会自动建目录,刷新 meta.json 的 last_seen_at。
 func New(workspace string) (*Manager, error) {
 	abs, err := filepath.Abs(workspace)
@@ -95,6 +101,36 @@ func (m *Manager) touchMeta() {
 	_ = os.WriteFile(path, data, 0o644)
 }
 
+// SaveSummary 保存压缩摘要并 reset total_turns 为压缩后保留的轮数。
+func (m *Manager) SaveSummary(text string, kept int) error {
+	path := filepath.Join(m.rootDir, "state.json")
+	var s stateFile
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &s)
+	}
+	s.Summary = text
+	s.TotalTurns = kept
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// LoadSummary 从 state.json 读取压缩摘要和 total_turns。
+func (m *Manager) LoadSummary() (summary string, totalTurns int) {
+	path := filepath.Join(m.rootDir, "state.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0
+	}
+	var s stateFile
+	if err := json.Unmarshal(data, &s); err != nil {
+		return "", 0
+	}
+	return s.Summary, s.TotalTurns
+}
+
 // todayPath 当天文件路径。按本地时区命名,方便人类浏览。
 func (m *Manager) todayPath() string {
 	return filepath.Join(m.rootDir, time.Now().Format("2006-01-02")+".jsonl")
@@ -103,6 +139,7 @@ func (m *Manager) todayPath() string {
 // Append 写一条记录到今天的 jsonl。
 // 只接受 role = "user" / "assistant",其他 role(system/tool)静默丢弃 —— 主对话才入会话文件。
 // 空 content 也跳过(流式中途的占位等)。
+// user 消息写入后同步递增 state.json 的 total_turns。
 func (m *Manager) Append(role, content string) error {
 	if role != "user" && role != "assistant" {
 		return nil
@@ -116,7 +153,25 @@ func (m *Manager) Append(role, content string) error {
 	}
 	defer f.Close()
 	enc := json.NewEncoder(f)
-	return enc.Encode(Entry{Ts: time.Now(), Role: role, Content: content})
+	if err := enc.Encode(Entry{Ts: time.Now(), Role: role, Content: content}); err != nil {
+		return err
+	}
+	if role == "user" {
+		m.incrTotalTurns()
+	}
+	return nil
+}
+
+// incrTotalTurns 递增 state.json 的 total_turns。失败静默。
+func (m *Manager) incrTotalTurns() {
+	path := filepath.Join(m.rootDir, "state.json")
+	var s stateFile
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &s)
+	}
+	s.TotalTurns++
+	data, _ := json.MarshalIndent(s, "", "  ")
+	_ = os.WriteFile(path, data, 0o644)
 }
 
 // LoadRecentTurns 从最新日期文件倒着读,凑足 n 个 user→assistant 对停。

@@ -28,9 +28,10 @@ const (
 // ModelEntry 单个 role 的完整连接配置 — base_url / model id / api_key 三件套。
 // 设计目标:flash 和 pro 可以指向不同 provider(比如 flash 用本地 vllm,pro 用 DeepSeek 云端)。
 type ModelEntry struct {
-	BaseURL string
-	Model   string
-	APIKey  string
+	BaseURL       string
+	Model         string
+	APIKey        string
+	ContextWindow int // 上下文窗口大小(tokens)
 }
 
 // ModelConfig 双模型配置。Flash 处理简单/查询型任务,Pro 处理复杂/规划型任务。
@@ -157,6 +158,56 @@ type sseChunk struct {
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
+}
+
+// chatResponse 非流式响应的完整结构。
+type chatResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
+// CallOnce 发起一次非流式 chat completion 调用,直接返回 content 文本。
+// 不带 tools 参数,适用于摘要生成等一次性文本生成场景。
+func CallOnce(apiKey, baseURL, modelID string, convo []ChatMessage, maxTokens int) (string, error) {
+	body, err := json.Marshal(chatRequest{
+		Model:     modelID,
+		MaxTokens: maxTokens,
+		Stream:    false,
+		Messages:  convo,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+	}
+
+	var result chatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("no choices in response")
+	}
+	return result.Choices[0].Message.Content, nil
 }
 
 // === 入口 ===

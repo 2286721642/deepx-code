@@ -129,6 +129,15 @@ type model struct {
 	turnOutputChars int           // 本轮 assistant content 累计字符数(只算 content,跳过 reasoning)
 }
 
+// compressionResultMsg 会话压缩完成后的结果,由异步 tea.Cmd 发回 Update。
+// cutIdx 是 snapshot 中保留起点的位置,用于在 live history 上做精确截断。
+type compressionResultMsg struct {
+	summary        string
+	cutIdx         int    // 从 snapshot 算出的截断位置
+	compressedTurns int   // 本次压缩的 user 轮数
+	err            error
+}
+
 func initialModel(models agent.ModelConfig, needsSetup bool) model {
 	vp := viewport.New()
 
@@ -195,30 +204,60 @@ func initialModel(models agent.ModelConfig, needsSetup bool) model {
 		skillCatalog:    skillCatalog,
 	}
 
-	// 默认重加最近 N 个 user→assistant 对。失败/空都没事,新会话起步。
+	// 恢复会话历史。有摘要时跳过覆盖的 user 恢复,无摘要时按对加载。
 	if sess != nil {
-		const resumeTurns = 20
-		entries := sess.LoadRecentTurns(resumeTurns)
-		for _, e := range entries {
-			m.history = append(m.history, agent.ChatMessage{
-				Role:    e.Role,
-				Content: e.Content,
-			})
-			// chatContent 用统一的角色前缀回显,看起来跟当前会话续上
-			role := "deepx"
-			if e.Role == "user" {
-				role = "You"
+		summary, totalTurns := sess.LoadSummary()
+		if summary != "" && totalTurns > 0 {
+			// totalTurns 是压缩后保留的轮数，直接用它加载。
+			entries := sess.LoadRecentTurns(totalTurns)
+
+			// 摘要作为第一条 assistant 消息
+			summaryMsg := "## 会话摘要\n" + summary
+			m.history = append(m.history, agent.ChatMessage{Role: "assistant", Content: summaryMsg})
+			m.chatContent.WriteString(rolePrefix("assistant") + summaryMsg + "\n\n---\n\n")
+
+			for _, e := range entries {
+				m.history = append(m.history, agent.ChatMessage{
+					Role:    e.Role,
+					Content: e.Content,
+				})
+				role := "deepx"
+				if e.Role == "user" {
+					role = "You"
+				}
+				m.chatContent.WriteString(rolePrefix(role) + e.Content + "\n\n")
 			}
-			m.chatContent.WriteString(rolePrefix(role) + e.Content + "\n\n")
+			if len(entries) > 0 {
+				m.chatContent.WriteString("---\n_(以上为历史对话,共 " +
+					strconv.Itoa(len(entries)) + " 条)_\n\n")
+			}
+		} else {
+			// 无压缩摘要:按对加载
+			const resumeTurns = 20
+			entries := sess.LoadRecentTurns(resumeTurns)
+			for _, e := range entries {
+				m.history = append(m.history, agent.ChatMessage{
+					Role:    e.Role,
+					Content: e.Content,
+				})
+				role := "deepx"
+				if e.Role == "user" {
+					role = "You"
+				}
+				m.chatContent.WriteString(rolePrefix(role) + e.Content + "\n\n")
+			}
+			if len(entries) > 0 {
+				m.chatContent.WriteString("---\n_(以上为历史对话,共 " +
+					strconv.Itoa(len(entries)) + " 条)_\n\n")
+			}
 		}
-		if len(entries) > 0 {
-			m.chatContent.WriteString("---\n_(以上为历史对话,共 " +
-				strconv.Itoa(len(entries)) + " 条)_\n\n")
-		}
-		// 注入当前模式通知,让 LLM 明确知道初始模式(启动时恒为 auto)
-		msg := "[系统通知] 当前模式: auto,所有工具可用。"
+		// 声明当前模式,通知 LLM 当前状态。模式始终从 auto 起步。
+		msg := modeNotification(m.mode, m.activeModelRole)
 		m.history = append(m.history, agent.ChatMessage{Role: "assistant", Content: msg})
 		m.appendChat("assistant", msg)
+		if m.session != nil {
+			_ = m.session.Append("assistant", msg)
+		}
 	}
 
 	// 首次启动:强制弹 modal,焦点在 setup 输入框
@@ -764,6 +803,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamCh = nil
 		m.turnElapsed = time.Since(m.turnStartedAt)
 		m.refreshViewport()
+
+		// 检查是否需要触发会话压缩：估算 token 数接近窗口的 70% 时触发。
+		ctxWin := m.models.Pro.ContextWindow
+		if ctxWin <= 0 {
+			ctxWin = 65536
+		}
+		if m.session != nil && m.models.Pro.Model != "" && estimateTokens(sumHistoryChars(m.history)) >= ctxWin*70/100 {
+			// 拷贝当前 history 快照,异步执行压缩
+			snapshot := make([]agent.ChatMessage, len(m.history))
+			copy(snapshot, m.history)
+				pro := m.models.Pro
+			return m, func() tea.Msg {
+				summary, cutIdx, compressedTurns, err := runCompression(snapshot, pro)
+				return compressionResultMsg{
+					summary:        summary,
+					cutIdx:         cutIdx,
+					compressedTurns: compressedTurns,
+					err:            err,
+				}
+			}
+		}
+
 		return m, nil
 
 	case agent.StreamErrMsg:
@@ -775,6 +836,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turnElapsed = time.Since(m.turnStartedAt)
 		m.refreshViewport()
 		return m, nil
+
+	case compressionResultMsg:
+		if msg.err != nil {
+			m.chatContent.WriteString("\n[会话压缩失败: " + msg.err.Error() + "]\n\n")
+			m.refreshViewport()
+			return m, nil
+		}
+		// total_turns reset 为压缩后保留的轮数。后续 Append 从该值递增。
+		_, totalTurns := m.session.LoadSummary()
+		keptCount := totalTurns - msg.compressedTurns
+		summaryMsg := "## 会话摘要\n" + msg.summary
+		kept := make([]agent.ChatMessage, 0, len(m.history)-msg.cutIdx+1)
+		kept = append(kept, agent.ChatMessage{Role: "assistant", Content: summaryMsg})
+		kept = append(kept, m.history[msg.cutIdx:]...)
+		m.history = kept
+
+		_ = m.session.SaveSummary(msg.summary, keptCount)
+
+		m.chatContent.WriteString(fmt.Sprintf("\n---\n**已压缩会话历史（%d 轮→摘要）**\n\n", msg.compressedTurns))
+		m.refreshViewport()
+		return m, nil
 	}
 
 	var inputCmd tea.Cmd
@@ -782,6 +864,115 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, inputCmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+// === 会话压缩 ===
+
+// compressionPrompt 是压缩历史对话时发给 LLM 的 system prompt。
+const compressionPrompt = `你是一个会话历史压缩助手。将对话历史压缩为结构化摘要。
+
+## 摘要需保留
+- 用户的任务目标和明确要求（尽量原文保留）
+- 已修改的文件及改动目的
+- 发现的错误和修复方案
+- 架构设计决策
+- 未完成的任务和下一步计划
+
+## 可以丢弃
+- 重复的调试尝试
+- 工具调用的详细输出
+- 已解决且不再相关的中间讨论
+
+如果输入中有 [previous summary],将其与新对话合并为一个连贯摘要。
+
+## 输出格式
+[自然语言摘要]
+
+最后模式: plan/auto`
+
+// keepTokenTarget 是压缩后保留的上下文目标（token 估算值）。
+const keepTokenTarget = 20000
+
+// runCompression 执行一次会话压缩：按 token 估算动态保留尾部上下文。
+// 在 bubbletea Cmd goroutine 中调用。
+func runCompression(history []agent.ChatMessage, pro agent.ModelEntry) (
+	summary string, cutIdx int, compressedTurns int, err error) {
+
+	hasPrevSummary := len(history) > 0 &&
+		history[0].Role == "assistant" &&
+		strings.HasPrefix(history[0].Content, "## 会话摘要")
+	startOffset := 0
+	if hasPrevSummary {
+		startOffset = 1
+	}
+
+	// 从尾部按 token 估算保留 keepTokenTarget 上下文的 user。
+	totalUsers := 0
+	for _, m := range history[startOffset:] {
+		if m.Role == "user" {
+			totalUsers++
+		}
+	}
+	if totalUsers <= 2 {
+		return "", 0, 0, fmt.Errorf("user 轮数不足,无需压缩")
+	}
+
+	keepStart := len(history)
+	charCount := 0
+	foundKeep := false
+	for i := len(history) - 1; i >= startOffset; i-- {
+		charCount += len(history[i].Content)
+		if history[i].Role == "user" {
+			if charCount*2/7 >= keepTokenTarget {
+				keepStart = i
+				foundKeep = true
+				break
+			}
+		}
+	}
+	if !foundKeep {
+		// 全部保留 token 数不够阈值，不压缩
+		return "", 0, 0, fmt.Errorf("上下文无需压缩")
+	}
+
+	cutIdx = keepStart
+
+	// 构造 LLM 输入。
+	var inputBuf strings.Builder
+	if hasPrevSummary {
+		inputBuf.WriteString("[previous summary]\n" + history[0].Content + "\n\n")
+	}
+	lastMode := "auto"
+	compressedUserCount := 0
+	for _, m := range history[startOffset:keepStart] {
+		if m.Role == "user" {
+			compressedUserCount++
+		}
+		if m.Role == "assistant" && strings.Contains(m.Content, "当前模式: plan") {
+			lastMode = "plan"
+		}
+		if m.Role == "assistant" && strings.Contains(m.Content, "当前模式: auto") {
+			lastMode = "auto"
+		}
+		inputBuf.WriteString("[" + m.Role + "]\n" + m.Content + "\n\n")
+	}
+
+	compressedTurns = compressedUserCount
+
+	convo := []agent.ChatMessage{
+		{Role: "system", Content: compressionPrompt},
+		{Role: "user", Content: inputBuf.String()},
+	}
+
+	summary, err = agent.CallOnce(pro.APIKey, pro.BaseURL, pro.Model, convo, 2048)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	if !strings.Contains(summary, "最后模式:") {
+		summary += "\n最后模式: " + lastMode
+	}
+
+	return summary, cutIdx, compressedTurns, nil
 }
 
 // buildUserMessage 把输入文本中的 [Image #N] 占位符替换成已落盘的图片绝对路径,
@@ -874,20 +1065,41 @@ func (m *model) appendChat(role, text string) {
 	m.refreshViewport()
 }
 
+// modeNotification 生成统一的模式/模型状态通知。
+// 所有位置（启动、/plan、/auto）措辞一致，确保重启后 DeepSeek 硬盘缓存命中。
+func modeNotification(mode agent.AgentMode, modelRole string) string {
+	modelPart := ""
+	if modelRole != "" {
+		modelPart = ", 模型: " + modelRole
+	}
+	switch mode {
+	case agent.AgentMode_Plan:
+		return "[系统通知] 当前模式: plan" + modelPart + "。Write / Update / Bash 已被禁用,只允许只读操作。"
+	default:
+		return "[系统通知] 当前模式: auto" + modelPart + "。所有工具可用。"
+	}
+}
+
 // handleSlashCommand 处理本地斜杠命令。
 func (m *model) handleSlashCommand(input string) {
 	cmd := strings.ToLower(strings.TrimSpace(input))
 	switch cmd {
 	case "/plan":
 		m.mode = agent.AgentMode_Plan
-		msg := "[系统通知] 已切换到 plan 模式。Write / Update / Bash 已被禁用,只允许只读操作。请严格遵守。"
+		msg := modeNotification(agent.AgentMode_Plan, m.activeModelRole)
 		m.history = append(m.history, agent.ChatMessage{Role: "assistant", Content: msg})
 		m.appendChat("assistant", msg)
+		if m.session != nil {
+			_ = m.session.Append("assistant", msg)
+		}
 	case "/auto":
 		m.mode = agent.AgentMode_Auto
-		msg := "[系统通知] 已切换到 auto 模式。所有工具均可使用,包含 Write / Update / Bash。"
+		msg := modeNotification(agent.AgentMode_Auto, m.activeModelRole)
 		m.history = append(m.history, agent.ChatMessage{Role: "assistant", Content: msg})
 		m.appendChat("assistant", msg)
+		if m.session != nil {
+			_ = m.session.Append("assistant", msg)
+		}
 	case "/mode":
 		m.appendChat("assistant", fmt.Sprintf("当前模式: %s", m.mode))
 	case "/config":

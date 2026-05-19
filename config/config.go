@@ -16,15 +16,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 // ModelEntry 单个 role(flash / pro)的完整配置。
 type ModelEntry struct {
-	BaseURL string `yaml:"base_url"`
-	Model   string `yaml:"model"`
-	APIKey  string `yaml:"api_key"`
+	BaseURL       string `yaml:"base_url"`
+	Model         string `yaml:"model"`
+	APIKey        string `yaml:"api_key"`
+	ContextWindow int    `yaml:"context_window"` // 上下文窗口大小(tokens)
 }
 
 // Config 整份 model.yaml 的反序列化目标。
@@ -66,16 +68,26 @@ func Exists() bool {
 func Default(apiKey string) *Config {
 	return &Config{
 		Flash: ModelEntry{
-			BaseURL: defaultBaseURL,
-			Model:   defaultFlashModel,
-			APIKey:  apiKey,
+			BaseURL:       defaultBaseURL,
+			Model:         defaultFlashModel,
+			APIKey:        apiKey,
+			ContextWindow: defaultContextWindow(defaultFlashModel),
 		},
 		Pro: ModelEntry{
-			BaseURL: defaultBaseURL,
-			Model:   defaultProModel,
-			APIKey:  apiKey,
+			BaseURL:       defaultBaseURL,
+			Model:         defaultProModel,
+			APIKey:        apiKey,
+			ContextWindow: defaultContextWindow(defaultProModel),
 		},
 	}
+}
+
+// defaultContextWindow 根据模型名推断上下文窗口。含 deepseek 的模型默认 1M tokens。
+func defaultContextWindow(model string) int {
+	if strings.Contains(strings.ToLower(model), "deepseek") {
+		return 1_048_576
+	}
+	return 65_536
 }
 
 // Load 从 ~/.deepx/model.yaml 读配置。文件缺失或解析失败返回 err。
