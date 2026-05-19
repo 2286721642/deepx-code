@@ -16,8 +16,9 @@ import (
 type AgentMode string
 
 const (
-	AgentMode_Plan AgentMode = "plan"
-	AgentMode_Auto AgentMode = "auto"
+	AgentMode_Plan   AgentMode = "plan"
+	AgentMode_Auto   AgentMode = "auto"
+	AgentMode_Review AgentMode = "review"
 
 	// 主 agent 单轮对话内的工具调用上限。
 	// 100 轮给复杂多步任务留足空间(典型场景:CreatePlan 之后还要做修改 + 测试 + 修复循环)。
@@ -48,9 +49,10 @@ type TokenMsg string                  // 助手正式回复(content)的文本增
 type ReasoningTokenMsg string         // 模型思考过程(reasoning_content)增量,TUI 用它驱动 spinner,不展示文字
 type StreamErrMsg struct{ Err error } // 错误
 type StreamDoneMsg struct{}           // 整个会话回合结束
-type ToolCallStartMsg struct {        // 即将调用工具
-	Name string
-	Args string
+type ToolCallStartMsg struct { // 即将调用工具
+	Name     string
+	Args     string
+	ReviewCh chan bool // review 模式下的审核通道,nil = 无需审核
 }
 type ToolCallResultMsg struct { // 工具调用返回
 	Name    string
@@ -267,7 +269,8 @@ func StartStream(
 
 # 模式限制
 - plan 模式:禁止 Write / Update / Bash,其余工具均可使用。
-- auto 模式:全部工具均可使用。
+- auto 模式:全部工具均可使用,无需人工审核。
+- review 模式:所有工具均可使用,但 Write / Update / Bash 需要人工审核确认后才执行,其余工具自动执行。
 - 每次模式切换时会有一条系统通知明确告诉你当前处于什么模式,严格遵守。
 - 如果当前模式禁止了你需要的工具,告诉用户"当前是 plan 模式,该操作不允许,请用 /auto 切换到 auto 模式"。不要试图绕过限制。
 
@@ -353,7 +356,22 @@ func StartStream(
 			//   - SwitchModel        → 改本轮 currentEntry / role,通过 ModelSwitchMsg 通知 UI
 			// 拦截后仍要给 LLM 一个 fake tool result,让 OpenAI 工具循环能正常推进。
 			for _, tc := range toolCalls {
-				ch <- ToolCallStartMsg{Name: tc.Function.Name, Args: tc.Function.Arguments}
+				// review 模式:对 Write/Update/Bash 发起审核
+				var reviewCh chan bool
+				if mode == AgentMode_Review && isReviewable(tc.Function.Name) {
+					reviewCh = make(chan bool, 1)
+				}
+				ch <- ToolCallStartMsg{Name: tc.Function.Name, Args: tc.Function.Arguments, ReviewCh: reviewCh}
+				if reviewCh != nil && !<-reviewCh {
+					ch <- ToolCallResultMsg{Name: tc.Function.Name, Output: "操作已被用户拒绝 (review 模式)", Success: false}
+					convo = append(convo, ChatMessage{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+						Content:    "操作已被用户拒绝 (review 模式)",
+					})
+					continue
+				}
 
 				var result tools.ToolResult
 				switch tc.Function.Name {
@@ -618,6 +636,11 @@ func allowedForRole(t tools.Tool, role string) bool {
 		}
 	}
 	return false
+}
+
+// isReviewable 判断工具在 review 模式下是否需要人工审核。
+func isReviewable(name string) bool {
+	return name == "Write" || name == "Update" || name == "Bash"
 }
 
 func executeTool(tc ToolCall, mode AgentMode, role string) tools.ToolResult {

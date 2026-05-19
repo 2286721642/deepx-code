@@ -121,6 +121,13 @@ type model struct {
 	skillLoader  *skill.Loader
 	skillCatalog string
 
+	// review 模式审核状态
+	reviewPending   bool
+	reviewCh        chan bool
+	reviewToolName  string
+	reviewToolArgs  string
+	reviewYesNo     bool // true=YES, false=NO
+
 	// 右栏仪表盘字段
 	workspace       string        // os.Getwd() at startup,展示当前工作目录
 	turnStartedAt   time.Time     // 本轮 Enter 时刻,用于实时计算 elapsed
@@ -129,8 +136,10 @@ type model struct {
 	turnOutputChars int           // 本轮 assistant content 累计字符数(只算 content,跳过 reasoning)
 }
 
+// reviewResultMsg 审核完成后从 goroutine 发回,恢复流监听。
+type reviewResultMsg struct{}
+
 // compressionResultMsg 会话压缩完成后的结果,由异步 tea.Cmd 发回 Update。
-// cutIdx 是 snapshot 中保留起点的位置,用于在 live history 上做精确截断。
 type compressionResultMsg struct {
 	summary        string
 	cutIdx         int    // 从 snapshot 算出的截断位置
@@ -487,6 +496,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, c
 		}
 
+		// review 审核态:↑/↓ 切换 YES/NO, Enter 确认, Esc 拒绝
+		if m.reviewPending {
+			switch msg.String() {
+			case "up", "down":
+				m.reviewYesNo = !m.reviewYesNo
+				m.refreshViewport()
+				return m, nil
+			case "enter":
+				m.reviewCh <- m.reviewYesNo
+				m.reviewPending = false
+				m.refreshViewport()
+				return m, func() tea.Msg {
+					return reviewResultMsg{}
+				}
+			case "esc", "ctrl+c":
+				m.reviewCh <- false
+				m.reviewPending = false
+				m.refreshViewport()
+				return m, func() tea.Msg {
+					return reviewResultMsg{}
+				}
+			}
+			return m, nil
+		}
+
 		// 命令 palette 导航键拦截。palette 由 input value 的 "/" 前缀触发,
 		// 这里只在 palette 打开时消费 ↑/↓/Tab,其他键继续往下走交给 textinput。
 		if matches := filterSlashCommands(m.input.Value()); len(matches) > 0 {
@@ -715,6 +749,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.chatContent.WriteString(sep + line + "\n")
 		m.refreshViewport()
+		// review 模式:暂停流,等待用户确认
+		if msg.ReviewCh != nil {
+			m.reviewPending = true
+			m.reviewCh = msg.ReviewCh
+			m.reviewToolName = msg.Name
+			m.reviewToolArgs = msg.Args
+			m.reviewYesNo = true // 默认 YES
+			return m, nil
+		}
 		// 工具执行期间继续转 spinner,等结果回来后才可能切到 content
 		if !m.thinking {
 			m.thinking = true
@@ -836,6 +879,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turnElapsed = time.Since(m.turnStartedAt)
 		m.refreshViewport()
 		return m, nil
+
+	case reviewResultMsg:
+		// 审核完成,恢复流监听继续工具循环
+		return m, agent.ListenToStream(m.streamCh)
 
 	case compressionResultMsg:
 		if msg.err != nil {
@@ -1075,12 +1122,14 @@ func modeNotification(mode agent.AgentMode, modelRole string) string {
 	switch mode {
 	case agent.AgentMode_Plan:
 		return "[系统通知] 当前模式: plan" + modelPart + "。Write / Update / Bash 已被禁用,只允许只读操作。"
+	case agent.AgentMode_Review:
+		return "[系统通知] 当前模式: review" + modelPart + "。Write / Update / Bash 需要人工审核确认后才执行,其余工具自动执行。"
 	default:
 		return "[系统通知] 当前模式: auto" + modelPart + "。所有工具可用。"
 	}
 }
 
-// handleSlashCommand 处理本地斜杠命令。
+// handleSlashCommand 处理本地斜杠命令。// handleSlashCommand 处理本地斜杠命令。
 func (m *model) handleSlashCommand(input string) {
 	cmd := strings.ToLower(strings.TrimSpace(input))
 	switch cmd {
@@ -1100,6 +1149,14 @@ func (m *model) handleSlashCommand(input string) {
 		if m.session != nil {
 			_ = m.session.Append("assistant", msg)
 		}
+	case "/review":
+		m.mode = agent.AgentMode_Review
+		msg := modeNotification(agent.AgentMode_Review, m.activeModelRole)
+		m.history = append(m.history, agent.ChatMessage{Role: "assistant", Content: msg})
+		m.appendChat("assistant", msg)
+		if m.session != nil {
+			_ = m.session.Append("assistant", msg)
+		}
 	case "/mode":
 		m.appendChat("assistant", fmt.Sprintf("当前模式: %s", m.mode))
 	case "/config":
@@ -1112,7 +1169,8 @@ func (m *model) handleSlashCommand(input string) {
 		m.appendChat("assistant", "\n**Slash 命令**\n\n"+
 			"- `/plan` — 切到只读模式(仅 Read / List / Grep / Glob / Tree / Search / Fetch / Memory)\n"+
 			"- `/auto` — 切回全工具模式(默认)\n"+
-			"- `/mode` — 显示当前模式\n"+
+			"- `/review` — 切到审核模式(Write/Update/Bash 需人工确认)\n"+
+				"- `/mode` — 显示当前模式\n"+
 			"- `/config` — 重新配置 API key (覆盖 `~/.deepx/model.yaml`)\n"+
 			"- `/skills` — 列出可用 skill\n"+
 			"- `/help` — 帮助\n\n"+

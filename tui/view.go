@@ -140,6 +140,9 @@ func (m model) View() tea.View {
 	if m.showSetup {
 		mainUI = overlayCentered(mainUI, m.setupModalBlock(), m.width, m.height)
 	}
+	if m.reviewPending {
+		mainUI = overlayCentered(mainUI, m.reviewBlock(), m.width, m.height)
+	}
 	// 锁到精确 m.width × m.height — Terminal.app 等终端对 ambiguous-width 字符 (◆/⏵ 等)
 	// 的渲染跟 lipgloss 估算可能不一致,行宽不齐会让 bubbletea 的 line-diff 跳行,
 	// 留下上一帧残影(右栏出现重复 section、滚动条断续)。强制 pad 到屏幕精确尺寸消除这一类。
@@ -286,6 +289,45 @@ func statusIcon(s string) string {
 		return "✗"
 	}
 	return "·"
+}
+
+// reviewBlock 渲染审核确认弹窗。
+func (m model) reviewBlock() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")).Render("⏳  Review Required")
+	desc := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(
+		"Review " + m.reviewToolName + " " + truncateReviewArgs(m.reviewToolArgs, 40))
+
+	yesStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	noStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	if m.reviewYesNo {
+		yesStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("236"))
+	} else {
+		noStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Background(lipgloss.Color("236"))
+	}
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		title,
+		"",
+		desc,
+		"",
+		yesStyle.Render("  [ YES ]"),
+		noStyle.Render("  [ NO  ]"),
+		"",
+		lipgloss.NewStyle().Foreground(subtleColor).Render("↑/↓ 选择 · Enter 确认 · Esc 拒绝"),
+	)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("11")).
+		Padding(1, 2).
+		Width(45).
+		Render(content)
+}
+
+// truncateReviewArgs 截断审核时显示的参数。
+func truncateReviewArgs(args string, max int) string {
+	if len(args) <= max {
+		return args
+	}
+	return args[:max] + "…"
 }
 
 func (m model) rightPanelView() string {
