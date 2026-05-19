@@ -108,6 +108,8 @@ type model struct {
 	// width 没变就复用同一个 renderer,避免每帧重建。
 	mdRenderer      *glamour.TermRenderer
 	mdRendererWidth int
+	mdCache      string // 上次渲染的 markdown 输出
+	mdCacheLen   int    // 上次渲染时的 chatContent 长度
 
 	// session 是当前 workspace 的持久化句柄。启动时建/打开 ~/.deepx/sessions/{sid}/,
 	// 写时机:user enter 后 + assistant 流结束(StreamDoneMsg)时各 append 一行。
@@ -233,6 +235,7 @@ func initialModel(models agent.ModelConfig, needsSetup bool) model {
 				role := "deepx"
 				if e.Role == "user" {
 					role = "You"
+	
 				}
 				m.chatContent.WriteString(rolePrefix(role) + e.Content + "\n\n")
 			}
@@ -252,6 +255,7 @@ func initialModel(models agent.ModelConfig, needsSetup bool) model {
 				role := "deepx"
 				if e.Role == "user" {
 					role = "You"
+	
 				}
 				m.chatContent.WriteString(rolePrefix(role) + e.Content + "\n\n")
 			}
@@ -847,6 +851,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turnElapsed = time.Since(m.turnStartedAt)
 		m.refreshViewport()
 
+		// 显示窗口:仅保留最近 10 轮,超出直接裁剪
+		m.trimDisplayTurns()
+
 		// 检查是否需要触发会话压缩：估算 token 数接近窗口的 70% 时触发。
 		ctxWin := m.models.Pro.ContextWindow
 		if ctxWin <= 0 {
@@ -1112,8 +1119,34 @@ func (m *model) appendChat(role, text string) {
 	m.refreshViewport()
 }
 
-// modeNotification 生成统一的模式/模型状态通知。
-// 所有位置（启动、/plan、/auto）措辞一致，确保重启后 DeepSeek 硬盘缓存命中。
+// trimDisplayTurns 扫描 chatContent 中的 user 前缀计数,超过 10 轮则裁剪旧轮。
+func (m *model) trimDisplayTurns() {
+	const maxDisplayTurns = 10
+	content := m.chatContent.String()
+	idx := len(content)
+	count := 0
+	for count <= maxDisplayTurns {
+		prev := lastIndexBefore(content, userPrefix, idx)
+		if prev < 0 {
+			return
+		}
+		count++
+		idx = prev
+	}
+	m.chatContent.Reset()
+	m.chatContent.WriteString(content[idx:])
+	m.mdCacheLen = 0
+	m.refreshViewport()
+}
+
+// lastIndexBefore 返回 s[:end] 中 substr 最后出现的位置。
+func lastIndexBefore(s, substr string, end int) int {
+	if end > len(s) {
+		end = len(s)
+	}
+	return strings.LastIndex(s[:end], substr)
+}
+
 func modeNotification(mode agent.AgentMode, modelRole string) string {
 	modelPart := ""
 	if modelRole != "" {
@@ -1302,38 +1335,30 @@ func (m *model) refreshViewport() {
 	atBottom := m.chatViewport.AtBottom()
 	w := m.chatViewport.Width()
 
-	// markdown 渲染先于其他叠加:把 chatContent (markdown 原文) 转成 styled ANSI 文本。
-	// glamour 自身按 width 做 word wrap + 给每个块加 2 格左 margin。
-	// 流式中每个 token 都会触发本函数,glamour 重渲整段 — 不完整的 markdown (如未闭合的 **) 当字面渲染。
-	// 这就是 ChatGPT 风格的"实时无闪烁"渲染:每帧自洽,新 token 到来后下一帧自然带上。
-	//
-	// 渲染前先 ensureEmojiSpacing:emoji 后紧跟 CJK / 字母时(LLM 输出 "📁拆大文件" 这种紧凑写法)
-	// 终端会按 text presentation 把 emoji 渲染成 1 cell 而非 2 cell,导致行宽估算少 1 → scrollbar
-	// 那行左移。在 emoji 后插空格强制 emoji presentation,稳定 2 cell。
-	content := m.renderMarkdown(ensureEmojiSpacing(m.chatContent.String()), w)
-	// 二次保险:glamour 在表格 cell normalize 时会 trim 掉前面 ensureEmojiSpacing 加的空格,
-	// 这里 ANSI-aware 再扫一遍补回 emoji 后的分隔空格(跳过 SGR 序列不破坏 ANSI)。
-	content = ensureEmojiSpacingANSI(content)
+	// 增量重渲:内容不变且宽度不变时复用缓存,避免滚动/鼠标/resize 触发
+	// glamour 全量重渲(对话长时开销巨大)。
+	var content string
+	if m.chatContent.Len() != m.mdCacheLen || m.mdRendererWidth != w || m.mdCache == "" {
+		raw := ensureEmojiSpacing(m.chatContent.String())
+		rendered := m.renderMarkdown(raw, w)
+		m.mdCache = ensureEmojiSpacingANSI(rendered)
+		m.mdCacheLen = m.chatContent.Len()
+		content = m.mdCache
+	} else {
+		content = m.mdCache
+	}
 
-	// plan 树和 spinner 不是 markdown — 它们是 ANSI 格式化的 widget,glamour 化只会破坏。
-	// 在 markdown 渲染后再叠加。
+	// plan / spinner 是 ANSI widget,叠加在 markdown 渲染之后。
 	if m.plan != nil && m.streaming {
 		content += "\n" + renderPlanForChat(m.plan)
 	}
 	if m.thinking {
 		content += m.spinner.View() + " thinking..."
 	}
-	// glamour 自身按 word boundary wrap 到 width,所以不需要再 ansi.Wrap。
-	// 但 plan / spinner 那段是后追加的,它们行数不多且本身就短行,wrap 也无意义。
-	// 选区高亮在所有渲染叠加之后注入,基于当前可见的 wrapped 行号定位。
 	if m.selecting && w > 0 {
 		content = applySelectionHighlight(content, m.selAnchor, m.selEnd, w)
 	}
-	// 不在这里 padLinesToWidth — viewport.SetContent 会按它自己的 width 重新 wrap,
-	// 我们 pad 完它再 wrap 一次,padding 就被冲掉了。统一在 view.go 里 viewport.View()
-	// 输出之后再 pad,那才是 scrollbar JoinHorizontal 真正用到的宽度。
 	m.chatViewport.SetContent(content)
-	// 只有用户原本在底部时才自动跟随,否则保持当前阅读位置
 	if atBottom {
 		m.chatViewport.GotoBottom()
 	}
