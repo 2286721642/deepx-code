@@ -1213,8 +1213,13 @@ func (m *model) appendChat(role, text string) {
 // 显示规则:
 //   - user: 非空 content 显示为用户消息
 //   - assistant: 非空 content 显示为助手回复;有 ToolCalls 时每个调用各自渲染成一段
-//   - tool: 标记 ✓ 结果完成(不展示冗长的 tool result 原文)
+//   - tool: **跳过** —— 跟直播流对齐。运行时 ToolCallResultMsg 成功时静默
+//     (model.go:820 附近),仅失败写 `  ✗ ...`。但 history 里的 tool message 不带
+//     成功/失败标记,无法在恢复时区分,索性全部不渲染。结果是否成功用户能从
+//     紧随其后的 assistant 回复推断 —— 不影响理解,且跟运行时观感一致。
 //   - system: 跳过
+//
+// 不写 m.history、不写 session.gob —— 仅是显示通道,改这里不影响 LLM 缓存。
 func rebuildChatFromHistory(cl *chatLog, history []agent.ChatMessage) {
 	for _, msg := range history {
 		switch msg.Role {
@@ -1231,13 +1236,6 @@ func rebuildChatFromHistory(cl *chatLog, history []agent.ChatMessage) {
 				line := formatToolCallLine(tc.Function.Name, tc.Function.Arguments)
 				cl.Open(line + "\n")
 			}
-		case "tool":
-			// 工具结果只标记完成,不展示全量输出(跟直播流 ToolCallResultMsg 一致)
-			icon, ok := toolIcons[msg.Name]
-			if !ok {
-				icon = defaultToolIcon
-			}
-			cl.Open("  " + icon + " ✓ " + msg.Name + "\n")
 		}
 	}
 }

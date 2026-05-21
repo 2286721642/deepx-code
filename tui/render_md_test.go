@@ -64,6 +64,29 @@ func TestRebuildChatFromHistorySegments(t *testing.T) {
 	}
 }
 
+// TestRebuildChatFromHistorySkipsToolResults 回归:tool role 消息必须跳过。
+// 运行时 ToolCallResultMsg 成功时静默(只 ToolCallStartMsg 写调用行),
+// 恢复路径以前会多写 "  ✓ ToolName" 一行 → 用户看到的是每个工具调用"重复"两遍。
+func TestRebuildChatFromHistorySkipsToolResults(t *testing.T) {
+	hist := []agent.ChatMessage{
+		{Role: "assistant", ToolCalls: []agent.ToolCall{
+			{Function: agent.ToolCallFunc{Name: "Bash", Arguments: `{"command":"ls"}`}},
+		}},
+		{Role: "tool", Name: "Bash", Content: "file1\nfile2"},
+	}
+
+	cl := newChatLog(0)
+	rebuildChatFromHistory(cl, hist)
+
+	out := cl.String()
+	if !strings.Contains(out, "Bash (ls)") {
+		t.Errorf("missing call line %q:\n%s", "Bash (ls)", out)
+	}
+	if strings.Contains(out, "✓ Bash") {
+		t.Errorf("found redundant '✓ Bash' result line — restore should skip tool messages:\n%s", out)
+	}
+}
+
 // TestRenderMarkdownDiffFence 验证 ~~~diff 块按 -/+/@@ 前缀分别上色,
 // 普通 ~~~ 块(无 infostring)仍然整体 dim,不应该出现红绿。
 func TestRenderMarkdownDiffFence(t *testing.T) {
