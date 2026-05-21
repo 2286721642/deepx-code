@@ -23,19 +23,19 @@ AI 代码助手，Go 实现的终端应用，对接任何 OpenAI Chat Completion
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/itmisx/deepx/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/itmisx/deepx-code/main/scripts/install.sh | bash
 ```
 
 ```bash
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/itmisx/deepx/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/itmisx/deepx-code/main/scripts/install.ps1 | iex
 ```
 
 ### 源码构建
 
 ```bash
-git clone https://github.com/itmisx/deepx.git
-cd deepx
+git clone https://github.com/itmisx/deepx-code.git
+cd deepx-code
 go build .        # 需要 Go 1.25+
 ```
 

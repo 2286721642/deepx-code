@@ -2,7 +2,7 @@
 # deepx one-click installer
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/itmisx/deepx/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/itmisx/deepx-code/main/scripts/install.sh | bash
 #   bash scripts/install.sh [--version vX.Y.Z] [--prefix ~/.local] [--from-source]
 #
 # 默认:从 GitHub Releases 拉取最新预编译二进制到 ~/.local/bin/deepx,并把 ~/.local/bin
@@ -16,7 +16,7 @@ set -euo pipefail
 # 配置:仓库地址固定写死,改动只需要更新这里。
 # ---------------------------------------------------------------------------
 OWNER="itmisx"
-REPO="deepx"
+REPO="deepx-code"
 BIN_NAME="deepx"
 
 # ---------------------------------------------------------------------------
@@ -188,10 +188,11 @@ else
 
     # goreleaser v2 的 {{.Version}} 不含 v 前缀,产物名 e.g. deepx_0.1.0_darwin_arm64.tar.gz
     # URL 路径里的 tag 仍保留 v 前缀。
+    # 注意:asset 前缀来自 goreleaser 的 project_name(deepx),不是 GitHub 仓库名(deepx-code)。
     VERSION_NO_V="${VERSION#v}"
     EXT="tar.gz"
     [ "$OS" = "windows" ] && EXT="zip"
-    ASSET="${REPO}_${VERSION_NO_V}_${OS}_${ARCH}.${EXT}"
+    ASSET="${BIN_NAME}_${VERSION_NO_V}_${OS}_${ARCH}.${EXT}"
     URL="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/${ASSET}"
 
     TMPDIR=$(mktemp -d)

@@ -385,8 +385,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		leftW, vpH := m.layout()
 		m.chatViewport.SetWidth(leftW)
 		m.chatViewport.SetHeight(vpH)
-		// textarea 自己包了 prompt 列宽,SetWidth 是整体外宽,直接传 leftW。
-		m.input.SetWidth(leftW)
+		// textarea 自己包了 prompt 列宽,SetWidth 是整体外宽,直接给 m.width(全宽)
+		// —— 不再让外层 lipgloss 再包一层 Width,双层 padding+ANSI 在 bubbletea cellbuf
+		// 里会让 CJK 宽字符的格子位置算错,首字符被后续帧覆盖成空(用户报"输入第一个汉字看不见")。
+		m.input.SetWidth(m.width)
 		m.input.SetHeight(inputAreaHeight - 1)
 		// 窗口尺寸变了 → wrap 重算 → 老 line 号失效,必须清选区
 		m.selecting = false
@@ -1036,12 +1038,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamCh == nil {
 			return m, nil
 		}
-		// 流结束时把当前 plan 最终状态固化进 chatContent,这样滚回历史还能看到。
-		// plan 渲染贴在当前 assistant 段尾部,共用一根色条。
-		if m.plan != nil {
-			m.chatContent.EnsureKind(kindAssistant, "")
-			m.chatContent.Append("\n" + renderPlanForChat(m.plan))
-		}
+		// 流结束时不再把 plan 固化进 chatContent —— plan 跑完后用户更关心模型的后续
+		// 总结输出,checkbox 列表留着只会和后续 token 混在一起视觉嘈杂。右栏 "X/Y done"
+		// 摘要仍在,要看完整步骤就翻 session 历史。
 		// 持久化助手最终回复。currentReply 在流式过程中累加,这里一次性落盘。
 		// 注意只存"主对话内容" —— tool_call / tool_result / reasoning 都不进 session 文件。
 		if m.session != nil {
@@ -1582,7 +1581,9 @@ func (m *model) renderChatBaseContent(w int) string {
 
 	// plan / spinner 是临时态(只在 streaming 期间显示),不另外画色条避免跟最后一段
 	// 的 ╰ 视觉重复。简单缩进 2 列,让它视觉上像是当前段的"延续"。
-	if m.plan != nil && m.streaming {
+	// 一旦所有节点跑完,overlay 就藏起来,让屏幕让给模型后续的总结/继续输出 ——
+	// 否则 checkbox 列表会和流式 token 视觉上混在一起。
+	if m.plan != nil && m.streaming && !m.plan.allFinished() {
 		content += "\n" + indentBlock(renderPlanForChat(m.plan), "  ")
 	}
 	if m.thinking {

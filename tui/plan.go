@@ -32,6 +32,24 @@ func (p *planState) apply(msg agent.TaskStatusMsg) {
 	}
 }
 
+// allFinished 报告所有 plan 节点是否都已经进入终态(done/failed/blocked)。
+// 全部跑完后 UI 隐藏 plan overlay,把屏幕让给模型后续的总结/继续输出,
+// 避免 checkbox 列表和流式 token 混在一起。
+func (p *planState) allFinished() bool {
+	if p == nil || len(p.items) == 0 {
+		return false
+	}
+	for _, it := range p.items {
+		switch it.Status {
+		case agent.PlanStatusDone, agent.PlanStatusFailed, agent.PlanStatusBlocked:
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // planStatusBox plan 状态用复选框风格渲染,固定 3 ANSI cell 宽。
 //   - pending: [ ] 待执行
 //   - running: [⏵] 跑中(着色)

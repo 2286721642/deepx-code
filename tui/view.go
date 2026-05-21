@@ -115,18 +115,14 @@ func (m model) View() tea.View {
 	}
 	body := strings.Join(bodyLines, "\n")
 
-	// 输入区:无边框,顶部留 1 行空白跟 body 视觉分开。textarea 自己渲染 prompt。
+	// 输入区:无边框,顶部留 1 行空白跟 body 视觉分开。textarea 已经在 SetWidth(m.width)
+	// 内部把每行 pad 到 m.width 宽,不再额外套 lipgloss Width —— 双层 ANSI+padding
+	// 在 bubbletea cellbuf 里会让 CJK 宽字符的首字符位置错位被覆盖。
 	inpInner := m.input.View()
 	if m.inputAllSelected {
 		inpInner = lipgloss.NewStyle().Reverse(true).Render(inpInner)
 	}
-	inpBox := lipgloss.NewStyle().
-		Width(m.width).
-		Height(inputAreaHeight - 1).
-		MaxHeight(inputAreaHeight - 1).
-		Foreground(lipgloss.Color("15")).
-		Render(inpInner)
-	inputBlock := lipgloss.NewStyle().Width(m.width).Render("") + "\n" + inpBox
+	inputBlock := strings.Repeat(" ", m.width) + "\n" + inpInner
 
 	mainUI := lipgloss.JoinVertical(lipgloss.Left, body, inputBlock)
 

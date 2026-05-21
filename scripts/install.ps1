@@ -1,7 +1,7 @@
 # deepx one-click installer (Windows / PowerShell)
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/itmisx/deepx/main/scripts/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/itmisx/deepx-code/main/scripts/install.ps1 | iex
 #
 # 直接运行(克隆仓库后):
 #   .\scripts\install.ps1
@@ -27,7 +27,7 @@ $ErrorActionPreference = 'Stop'
 # 固定配置
 # ---------------------------------------------------------------------------
 $Owner   = 'itmisx'
-$Repo    = 'deepx'
+$Repo    = 'deepx-code'
 $BinName = 'deepx.exe'
 
 if (-not $Prefix) { $Prefix = Join-Path $env:LOCALAPPDATA 'Programs\deepx' }
@@ -141,8 +141,10 @@ else {
 
     # goreleaser v2 的 {{.Version}} 不含 v 前缀,产物名 e.g. deepx_0.1.0_windows_amd64.zip
     # URL 路径里的 tag 仍保留 v 前缀。
+    # 注意:asset 前缀来自 goreleaser 的 project_name(deepx),不是 GitHub 仓库名(deepx-code)。
     $versionNoV = $Version -replace '^v', ''
-    $asset = "${Repo}_${versionNoV}_windows_${Arch}.zip"
+    $assetPrefix = $BinName -replace '\.exe$', ''
+    $asset = "${assetPrefix}_${versionNoV}_windows_${Arch}.zip"
     $url   = "https://github.com/$Owner/$Repo/releases/download/$Version/$asset"
     $tmp   = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "deepx-install-$([guid]::NewGuid().ToString('N'))") -Force
     $zipPath = Join-Path $tmp $asset
