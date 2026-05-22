@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>deepx web</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="vendor/vue.global.prod.js"></script>
+  <script src="vendor/marked.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">deepx<span class="brand-sub">web</span></div>
+      <div class="conn" :class="connected ? 'on' : 'off'">
+        <span class="dot"></span>{{ connected ? t('connected') : t('reconnecting') }}
+      </div>
+      <div v-if="streaming" class="streaming-tag">{{ t('streaming') }}</div>
+    </header>
+
+    <main class="layout">
+      <!-- 左:聊天 -->
+      <section class="chat">
+        <div class="messages" ref="msgList">
+          <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
+            <div class="role">{{ m.role === 'user' ? t('you') : 'deepx' }}</div>
+            <div v-if="m.role === 'user'" class="bubble user-text">{{ m.content }}</div>
+            <div v-else class="bubble md" v-html="render(m.content)"></div>
+          </div>
+          <div v-if="thinking" class="msg assistant">
+            <div class="role">deepx</div>
+            <div class="bubble typing"><span></span><span></span><span></span></div>
+          </div>
+        </div>
+
+        <form class="composer" @submit.prevent="send">
+          <textarea
+            v-model="input"
+            :placeholder="streaming ? t('placeholder.streaming') : t('placeholder.idle')"
+            @keydown="onKey"
+            rows="1"
+            ref="ta"></textarea>
+          <button type="submit" :disabled="!input.trim()">{{ t('send') }}</button>
+        </form>
+      </section>
+
+      <!-- 右:状态(workspace 段在最上,下面状态/规划/工具三段常驻,无内容时留空) -->
+      <aside class="status">
+        <div class="sec">
+          <div class="sec-title">◆ {{ t('workspace') }}</div>
+          <div class="ws-path" :title="workspace">{{ workspace || '—' }}</div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title">◆ {{ t('panel.status') }}</div>
+          <div class="kv"><span>{{ t('label.state') }}</span><b :class="streaming ? 'active' : ''">{{ streaming ? t('state.streaming') : t('state.idle') }}</b></div>
+          <div class="model-row" :class="{active: models.activeRole==='flash'}">
+            <span class="arrow">{{ models.activeRole==='flash' ? '▶' : ' ' }}</span>
+            <span class="role">flash</span>
+            <span class="model-id">{{ models.flash || '—' }}</span>
+          </div>
+          <div class="model-row" :class="{active: models.activeRole==='pro'}">
+            <span class="arrow">{{ models.activeRole==='pro' ? '▶' : ' ' }}</span>
+            <span class="role">pro</span>
+            <span class="model-id">{{ models.pro || '—' }}</span>
+          </div>
+          <div class="kv"><span>{{ t('label.prompt') }}</span><b>{{ usage ? usage.promptTokens : '—' }}</b></div>
+          <div class="kv"><span>{{ t('label.output') }}</span><b>{{ usage ? usage.completionTokens : '—' }}</b></div>
+          <div class="kv"><span>{{ t('label.cache') }}</span><b>{{ cacheRate }}</b></div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title">◆ {{ t('panel.plan') }}</div>
+          <div v-if="!plan.length" class="empty">—</div>
+          <div v-for="p in plan" :key="p.id" class="plan-item" :class="p.status">
+            <span class="box">{{ planIcon(p.status) }}</span>
+            <div class="plan-body">
+              <div class="plan-title">{{ p.title }}<span class="tag" v-if="p.model">[{{ p.model }}]</span></div>
+              <div class="plan-sum" v-if="p.summary">{{ p.summary }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title">◆ {{ t('panel.tools') }}</div>
+          <div v-if="!toolCalls.length" class="empty">—</div>
+          <details v-for="tc in toolCalls" :key="tc.id" class="tool" :class="tc.status">
+            <summary>
+              <span class="box">{{ toolIcon(tc.status) }}</span>{{ tc.name }}
+            </summary>
+            <pre class="tool-args" v-if="tc.args">{{ tc.args }}</pre>
+            <pre class="tool-out" v-if="tc.output">{{ tc.output }}</pre>
+          </details>
+        </div>
+      </aside>
+    </main>
+
+    <!-- review 确认弹层 -->
+    <div v-if="reviewPending" class="review-mask">
+      <div class="review-box">
+        <div class="review-title">{{ t('review.title') }}</div>
+        <div class="review-name">{{ reviewPending.name }}</div>
+        <pre class="review-args">{{ reviewPending.args }}</pre>
+        <div class="review-actions">
+          <button class="approve" @click="review(true)">{{ t('review.approve') }}</button>
+          <button class="reject" @click="review(false)">{{ t('review.reject') }}</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -403,6 +403,9 @@ func (m model) rightPanelView() string {
 	}
 	rows = append(rows, section(T("panel.endpoint"), []string{subtle(host)})...)
 
+	// 注:web dashboard 地址不在右栏显示 —— 启动时已在 chat 区给出可点击 / 已复制的提示,
+	// 这里再放一份既重复又因面板窄被迫折行,反而没法点。
+
 	// Workspace section:标题尾接 session 哈希。不走 section() 是为了让哈希用 subtle 暗色。
 	workspaceTitle := lipgloss.NewStyle().Foreground(highlightColor).Render("◆ ") +
 		lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(strings.ToUpper(T("panel.workspace")))

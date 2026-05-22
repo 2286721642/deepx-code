@@ -294,4 +294,18 @@ var translations = map[string]map[Lang]string{
 		LangZH: "🎉 **新版本可用**: `v%s` → `v%s`\n升级: %s",
 		LangEN: "🎉 **New version available**: `v%s` → `v%s`\nUpgrade: %s",
 	},
+
+	// === Web dashboard ===
+	"web.ready": {
+		LangZH: "🌐 **Web Dashboard 已就绪**\n<%s>\n%s(终端支持的话可直接点上面的链接打开)",
+		LangEN: "🌐 **Web dashboard ready**\n<%s>\n%s (click the link above if your terminal supports it)",
+	},
+	"web.ready.copied": {
+		LangZH: "地址已复制到剪贴板,可直接粘贴到浏览器",
+		LangEN: "URL copied to clipboard — paste it into your browser",
+	},
+	"web.ready.nocopy": {
+		LangZH: "复制到剪贴板失败,请手动复制上面的地址",
+		LangEN: "Clipboard copy failed — copy the URL above manually",
+	},
 }

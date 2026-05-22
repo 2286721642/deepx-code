@@ -1,0 +1,195 @@
+package web
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"net"
+	"net/http"
+	"time"
+)
+
+// Server 是本地 web dashboard 的 HTTP 服务。绑 127.0.0.1,带随机 token 防同机乱访问。
+// 输入回注通过 OnInput/OnReview 回调解耦,由 tui/run.go 注入(内部调 program.Send)。
+type Server struct {
+	hub   *Hub
+	token string
+	ln    net.Listener
+	srv   *http.Server
+
+	// 回调:浏览器提交输入 / review 确认时触发。由调用方注入。
+	OnInput  func(text string)
+	OnReview func(approve bool)
+}
+
+// NewServer 创建 Server,token 随机生成。
+func NewServer(hub *Hub) *Server {
+	return &Server{hub: hub, token: randomToken()}
+}
+
+// Listen 在 127.0.0.1:port 上监听(port=0 取随机空闲端口),返回带 token 的访问 URL。
+func (s *Server) Listen(port int) (string, error) {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return "", err
+	}
+	s.ln = ln
+	actual := ln.Addr().(*net.TCPAddr).Port
+	return fmt.Sprintf("http://127.0.0.1:%d/?t=%s", actual, s.token), nil
+}
+
+// Serve 启动 HTTP 服务(阻塞)。通常放进 goroutine。Close 后返回。
+func (s *Server) Serve() error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/api/events", s.handleEvents)
+	mux.HandleFunc("/api/input", s.handleInput)
+	mux.HandleFunc("/api/review", s.handleReview)
+	mux.HandleFunc("/api/state", s.handleState)
+	s.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	err := s.srv.Serve(s.ln)
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+// Close 关闭服务。
+func (s *Server) Close() {
+	if s.srv != nil {
+		_ = s.srv.Close()
+	} else if s.ln != nil {
+		_ = s.ln.Close()
+	}
+}
+
+func randomToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "deepx" // 极端兜底,实际 crypto/rand 不会失败
+	}
+	return hex.EncodeToString(b)
+}
+
+// authed 校验请求是否带正确 token(query ?t= 或 cookie)。
+func (s *Server) authed(r *http.Request) bool {
+	if r.URL.Query().Get("t") == s.token {
+		return true
+	}
+	if c, err := r.Cookie("deepx_token"); err == nil && c.Value == s.token {
+		return true
+	}
+	return false
+}
+
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if !s.authed(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	// 首次带 token 访问 → 种 cookie,后续 API 请求免带 ?t=。
+	if r.URL.Query().Get("t") == s.token {
+		http.SetCookie(w, &http.Cookie{
+			Name: "deepx_token", Value: s.token, Path: "/", HttpOnly: true,
+		})
+	}
+	// 禁止浏览器缓存内嵌静态资源 —— go:embed 文件 modtime 为零值,否则浏览器会一直用旧的
+	// app.js/css,deepx 升级后前端不更新(用户曾遇到改了算法但页面还是旧逻辑)。
+	w.Header().Set("Cache-Control", "no-store")
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		http.Error(w, "embed error", http.StatusInternalServerError)
+		return
+	}
+	http.FileServer(http.FS(sub)).ServeHTTP(w, r)
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if !s.authed(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ch, snap, unsub := s.hub.Subscribe()
+	defer unsub()
+
+	writeSSE(w, "snapshot", snap)
+	flusher.Flush()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return // hub 关闭了该客户端(慢消费者),浏览器会自动重连
+			}
+			writeSSE(w, "delta", ev)
+			flusher.Flush()
+		}
+	}
+}
+
+func writeSSE(w http.ResponseWriter, event string, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+}
+
+func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
+	if !s.authed(r) || r.Method != http.MethodPost {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if s.OnInput != nil && body.Text != "" {
+		s.OnInput(body.Text)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
+	if !s.authed(r) || r.Method != http.MethodPost {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var body struct {
+		Approve bool `json:"approve"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if s.OnReview != nil {
+		s.OnReview(body.Approve)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
+	if !s.authed(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.hub.SnapshotCopy())
+}

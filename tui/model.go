@@ -6,6 +6,7 @@ import (
 	"deepx/session"
 	"deepx/skill"
 	"deepx/tools"
+	"deepx/web"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -161,7 +162,18 @@ type model struct {
 	// window resize 时新 width 会触发新 renderer 创建,旧的进 cache 但短期不复用 — 不主动清理,
 	// 内存占用极小(每个实例约几 KB,通常活跃 1-2 个 width)。
 	mdRenderers map[int]*glamour.TermRenderer
+
+	// web dashboard:hub 为 nil 表示 web 关闭(所有广播走 broadcast() 守卫跳过)。
+	// webURL 非空时右栏显示 ◆ WEB 地址。
+	hub    *web.Hub
+	webURL string
 }
+
+// webInputMsg 是浏览器提交的输入,经 program.Send 注入,走和终端 Enter 完全相同的提交逻辑。
+type webInputMsg struct{ text string }
+
+// webReviewMsg 是浏览器的 review 确认,经 program.Send 注入,复用终端同一个 ReviewCh(先到先得)。
+type webReviewMsg struct{ approve bool }
 
 // reviewResultMsg 审核完成后从 goroutine 发回,恢复流监听。
 type reviewResultMsg struct{}
@@ -174,7 +186,7 @@ type compressionResultMsg struct {
 	err             error
 }
 
-func initialModel(models agent.ModelConfig, needsSetup bool, version string) model {
+func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub *web.Hub, webURL string) model {
 	vp := viewport.New()
 
 	sp := spinner.New()
@@ -276,6 +288,8 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string) mod
 		session:         sess,
 		skillLoader:     loader,
 		skillCatalog:    skillCatalog,
+		hub:             hub,
+		webURL:          webURL,
 	}
 
 	// 回填上轮 token 用量,Usage section 启动后立刻显示真实数字而非 "—"。
@@ -377,6 +391,16 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string) mod
 		m.input.Focus()
 	}
 
+	// web dashboard 启用时:把含 token 的完整 URL 复制到剪贴板,并在 chat 区给一条提示。
+	// 这样"复制"(自动进剪贴板,可粘贴)和"点击跳转"(右栏 OSC 8 超链接)两条路都通。
+	if webURL != "" {
+		copied := T("web.ready.nocopy")
+		if err := writeClipboardText(webURL); err == nil {
+			copied = T("web.ready.copied")
+		}
+		m.appendChat("System", fmt.Sprintf(T("web.ready"), webURL, copied))
+	}
+
 	// endpoint / 模型 / 模式信息全部移到右栏(rightPanelView 直接读 m.models / m.baseURL),
 	// chat 区不再发开场 System 消息,保持干净
 	return m
@@ -395,6 +419,83 @@ func cursorBlinkTick() tea.Cmd {
 	})
 }
 
+// broadcast 把事件发给 web hub(关闭时 hub==nil,直接跳过)。
+func (m model) broadcast(ev web.Event) {
+	if m.hub != nil {
+		m.hub.Broadcast(ev)
+	}
+}
+
+// submitUserInput 是终端 Enter 和 web 输入共用的提交入口:
+// 斜杠命令直接执行;否则构造 user 消息、落盘、广播 user_message,并启动 agent stream。
+// 不碰输入框(textarea 清空由 Enter 分支自己做)。
+func (m model) submitUserInput(input string) (model, tea.Cmd) {
+	input = strings.TrimSpace(input)
+	if input == "" && len(m.attachedImagePaths) == 0 {
+		return m, nil
+	}
+	// 斜杠命令:仅匹配已知命令,粘贴的路径类文本不误触
+	if matches := filterSlashCommands(input); len(matches) > 0 {
+		m.handleSlashCommand(matches[0].name)
+		return m, nil
+	}
+	// 流式中再提交(主要是 web 端可能在生成时点发送)→ 丢弃,避免并发两个 stream。
+	if m.streaming {
+		return m, nil
+	}
+
+	userMsg := m.buildUserMessage(input)
+	// 聊天窗口里仍显示用户输入的原文(含占位符),路径替换只发生在发给 LLM 的消息体中。
+	m.appendChat("You", input)
+	m.history = append(m.history, userMsg)
+	// 持久化用户输入到 session 文件。
+	if m.session != nil {
+		_ = m.session.Append("user", input)
+	}
+	m.broadcast(web.Event{Kind: "user_message", Text: input})
+	m.attachedImagePaths = nil
+
+	m.status = "thinking"
+	m.streaming = true
+	m.thinking = true
+	m.currentReply.Reset()
+
+	// 仪表盘:开计时,快照本轮输入字符数,输出归零
+	m.turnStartedAt = time.Now()
+	m.turnInputChars = sumHistoryChars(m.history)
+	m.turnOutputChars = 0
+
+	m.refreshViewport()
+
+	var cmds []tea.Cmd
+	cmds = append(cmds, m.spinner.Tick)
+
+	// 每次新用户消息开始,角色重置回 flash;agent 内部 keyword router 决定本轮真实模型。
+	m.activeModelRole = "flash"
+	m.activeModelID = m.models.Flash.Model
+	if m.activeModelID == "" {
+		m.activeModelRole = "pro"
+		m.activeModelID = m.models.Pro.Model
+	}
+	// 上一轮的 plan 清空
+	m.plan = nil
+
+	workspace, _ := os.Getwd()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelAgent = cancel
+	cmd, ch := agent.StartStream(
+		ctx,
+		m.models,
+		m.history, maxTokens,
+		m.mode,
+		workspace,
+		m.skillCatalog,
+	)
+	m.streamCh = ch
+	cmds = append(cmds, cmd)
+	return m, tea.Batch(cmds...)
+}
+
 func (m model) Init() tea.Cmd {
 	// textarea 的光标 blink 由 Focus() 返回,启动时一并发起。
 	// checkForUpgradeCmd 异步打 GitHub Releases API,完成后通过 upgradeCheckResult 回送 Update。
@@ -405,7 +506,30 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// web 镜像:agent 的每条流式消息恰好过一次 Update,这里统一映射并广播给浏览器。
+	// 非 agent 消息(按键 / tick 等)ToWebEvent 返回 false,不广播。hub==nil 时 broadcast 跳过。
+	if ev, ok := web.ToWebEvent(msg); ok {
+		m.broadcast(ev)
+	}
+
 	switch msg := msg.(type) {
+
+	case webInputMsg:
+		// 浏览器提交的输入,走和终端 Enter 完全相同的提交逻辑。
+		var cmd tea.Cmd
+		m, cmd = m.submitUserInput(msg.text)
+		return m, cmd
+
+	case webReviewMsg:
+		// 浏览器的 review 确认,复用终端同一个 ReviewCh(先到先得)。
+		if m.reviewPending {
+			m.reviewCh <- msg.approve
+			m.reviewPending = false
+			m.broadcast(web.Event{Kind: "review_resolved"})
+			m.refreshViewport()
+			return m, func() tea.Msg { return reviewResultMsg{} }
+		}
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -625,6 +749,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showLangModal = false
 				// 切换后右栏 / palette 的 desc 都需要刷新一遍
 				m.refreshViewport()
+				// 同步语言给 web 端
+				m.broadcast(web.Event{Kind: "lang", Text: string(picked)})
 				name := "中文"
 				if picked == LangEN {
 					name = "English"
@@ -648,6 +774,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				m.reviewCh <- m.reviewYesNo
 				m.reviewPending = false
+				m.broadcast(web.Event{Kind: "review_resolved"})
 				m.refreshViewport()
 				return m, func() tea.Msg {
 					return reviewResultMsg{}
@@ -655,6 +782,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc", "ctrl+c":
 				m.reviewCh <- false
 				m.reviewPending = false
+				m.broadcast(web.Event{Kind: "review_resolved"})
 				m.refreshViewport()
 				return m, func() tea.Msg {
 					return reviewResultMsg{}
@@ -819,68 +947,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if input == "" && len(m.attachedImagePaths) == 0 {
 				return m, nil
 			}
-
-			// 斜杠命令:仅匹配已知命令,粘贴的路径类文本不误触
-			if matches := filterSlashCommands(input); len(matches) > 0 {
-				m.input.SetValue("")
-				m.handleSlashCommand(matches[0].name)
-				return m, nil
-			}
-
-			userMsg := m.buildUserMessage(input)
-			// 聊天窗口里仍显示用户输入的原文 (含占位符),路径替换只发生在发给 LLM 的消息体中。
-			m.appendChat("You", input)
-			m.history = append(m.history, userMsg)
-			// 持久化用户输入到 session 文件。占位符版本(input)而非含完整路径的 LLM 体 —— 重加时
-			// 路径已失效但占位符语义清晰;memory 检索时关键词也按用户原话更直观。
-			if m.session != nil {
-				_ = m.session.Append("user", input)
-			}
-			m.attachedImagePaths = nil
 			m.input.SetValue("")
-
-			m.status = "thinking"
-			m.streaming = true
-			m.thinking = true
-			m.currentReply.Reset()
-
-			// 仪表盘:开计时,快照本轮输入字符数(用 history 总长近似 = 上下文输入),输出归零
-			m.turnStartedAt = time.Now()
-			m.turnInputChars = sumHistoryChars(m.history)
-			m.turnOutputChars = 0
-
-			// 不预开 assistant 段 — 空段会渲染成空荡荡的 ╭ + ╰,影响观感。
-			// 等 TokenMsg / ToolCallStartMsg 到达时再由 EnsureKind/Open 真正开段。
-			// 这段空窗期由 spinner "thinking..." 提示填补。
-			m.refreshViewport()
-			// 启动 spinner ticking
-			cmds = append(cmds, m.spinner.Tick)
-
-			// 每次新用户消息开始,角色重置回 flash (起手就是默认 flash)。
-			// agent.StartStream 内部根据 keyword router 决定本轮真实模型,然后通过 ModelSwitchMsg 通知。
-			m.activeModelRole = "flash"
-			m.activeModelID = m.models.Flash.Model
-			if m.activeModelID == "" {
-				m.activeModelRole = "pro"
-				m.activeModelID = m.models.Pro.Model
-			}
-			// 上一轮的 plan 清空,避免残留状态混淆当前任务
-			m.plan = nil
-
-			workspace, _ := os.Getwd()
-			ctx, cancel := context.WithCancel(context.Background())
-			m.cancelAgent = cancel
-			cmd, ch := agent.StartStream(
-				ctx,
-				m.models,
-				m.history, maxTokens,
-				m.mode,
-				workspace,
-				m.skillCatalog,
-			)
-			m.streamCh = ch
-			cmds = append(cmds, cmd)
-			return m, tea.Batch(cmds...)
+			var cmd tea.Cmd
+			m, cmd = m.submitUserInput(input)
+			return m, cmd
 		}
 
 	case upgradeCheckResult:
@@ -949,13 +1019,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatContent.Open(kindTools, line+"\n")
 		}
 		m.refreshViewport()
-		// review 模式:暂停流,等待用户确认
+		// review 模式:暂停流,等待用户确认。web 端也弹确认层。
 		if msg.ReviewCh != nil {
 			m.reviewPending = true
 			m.reviewCh = msg.ReviewCh
 			m.reviewToolName = msg.Name
 			m.reviewToolArgs = msg.Args
 			m.reviewYesNo = true // 默认 YES
+			m.broadcast(web.Event{Kind: "review_request", Name: msg.Name, Args: msg.Args})
 			return m, nil
 		}
 		// 工具执行期间继续转 spinner,等结果回来后才可能切到 content
