@@ -1062,7 +1062,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cur == "" {
 					cur = "dev"
 				}
-				m.appendChat("System", fmt.Sprintf(T("upgrade.available"), cur, msg.LatestVersion, upgradeCommand()))
+				m.appendChat("System", fmt.Sprintf(T("upgrade.available"), cur, msg.LatestVersion, UpgradeHint))
 			}
 		}
 		return m, nil

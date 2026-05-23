@@ -198,7 +198,8 @@ else
     TMPDIR=$(mktemp -d)
     trap 'rm -rf "$TMPDIR"' EXIT
     info "URL: ${URL}"
-    if ! curl -fsSL --connect-timeout 10 --max-time 60 "$URL" -o "$TMPDIR/$ASSET"; then
+    # --progress-bar:下载大文件时显示进度条(去掉 -s 的静默,保留 -S 让出错仍报错)
+    if ! curl -fSL --progress-bar --connect-timeout 10 --max-time 120 "$URL" -o "$TMPDIR/$ASSET"; then
         error "下载失败。常见原因:版本号不存在,或该平台没出包。"
         info "可在浏览器查看可用资产:https://github.com/${OWNER}/${REPO}/releases/tag/${VERSION}"
         exit 1

@@ -21,6 +21,13 @@ func main() {
 		fmt.Printf("deepx %s (commit %s, built %s)\n", version, commit, date)
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "upgrade" {
+		if err := tui.RunUpgrade(); err != nil {
+			fmt.Fprintln(os.Stderr, "升级失败:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	cfg, needsSetup, err := loadOrEmptyConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)

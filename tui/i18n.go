@@ -314,8 +314,8 @@ var translations = map[string]map[Lang]string{
 
 	// === 版本升级提醒 ===
 	"upgrade.available": {
-		LangZH: "🎉 **新版本可用**: `v%s` → `v%s`\n一键升级(重跑安装脚本覆盖更新):\n```\n%s\n```",
-		LangEN: "🎉 **New version available**: `v%s` → `v%s`\nUpgrade (re-run the installer to update in place):\n```\n%s\n```",
+		LangZH: "🎉 **新版本可用**: `v%s` → `v%s`\n```\n%s\n```",
+		LangEN: "🎉 **New version available**: `v%s` → `v%s`\n```\n%s\n```",
 	},
 
 	// === 复制提示 ===

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -94,6 +96,27 @@ func upgradeCommand() string {
 		return fmt.Sprintf("irm %s/install.ps1 | iex", base)
 	}
 	return fmt.Sprintf("curl -fsSL %s/install.sh | bash", base)
+}
+
+// UpgradeHint 是提醒里展示给用户的升级指令 —— 短到不会折行,拖选粘贴一次就对。
+// 实际干活的是 `deepx upgrade` 子命令(见 RunUpgrade)。
+const UpgradeHint = "deepx upgrade"
+
+// RunUpgrade 执行 `deepx upgrade`:重跑平台对应的安装脚本(从 GitHub Releases 拉最新
+// 二进制覆盖安装)。输出直通终端。供 main.go 在 `deepx upgrade` 子命令里调用。
+func RunUpgrade() error {
+	script := upgradeCommand()
+	fmt.Printf("→ %s\n\n", script)
+	var c *exec.Cmd
+	if runtime.GOOS == "windows" {
+		c = exec.Command("powershell", "-NoProfile", "-Command", script)
+	} else {
+		c = exec.Command("sh", "-c", script)
+	}
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	c.Stdin = os.Stdin
+	return c.Run()
 }
 
 // versionNewer 比较两个语义化版本字符串(已去 v 前缀,允许后缀 -rc1 / -beta 等)。
