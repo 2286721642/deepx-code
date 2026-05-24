@@ -55,11 +55,45 @@ type metaFile struct {
 	LastSeenAt time.Time `json:"last_seen_at"`
 }
 
-// stateFile 是 ~/.deepx/sessions/{sid}/state.json 的结构。
+// stateFile 是 ~/.deepx/sessions/{sid}/state.json 的结构。只放小而高频写的字段。
+// 大块(摘要、上次 system 文本、上次 tool specs)各自存裸文件,避免高频写时整体重写大 JSON,
+// 也避免 tool specs JSON 被二次转义。见 summaryFile / lastPromptFile / lastToolsFile。
 type stateFile struct {
-	Summary    string         `json:"summary"`              // 会话压缩摘要
-	TotalTurns int            `json:"total_turns"`          // 当前有效 user 轮数
-	LastUsage  *usageSnapshot `json:"last_usage,omitempty"` // 上轮 API 调用 token 用量,启动时回填 Usage section
+	LastUsage   *usageSnapshot `json:"last_usage,omitempty"`   // 上轮 API 调用 token 用量,启动时回填 Usage section
+	PrefixSig   string         `json:"prefix_sig,omitempty"`   // hash(系统提示词+工具+mcp),重启检测前缀变化
+	PrefixModel string         `json:"prefix_model,omitempty"` // 上次实际发送用的 model ID(缓存按模型分,压缩需同模型才命中)
+
+	// Summary 已迁出到独立裸文件;此字段仅用于读取旧版本遗留的 state.json(向后兼容)。
+	Summary string `json:"summary,omitempty"`
+}
+
+// 大块裸文件名(无后缀,直接读写内容):
+//   summaryFile     — 会话压缩摘要(纯文本)
+//   lastPromptFile  — 上次实际发送的 system 文本(纯文本,压缩时复刻旧前缀)
+//   lastToolsFile   — 上次实际发送的 tool specs(裸 JSON,不被二次转义)
+const (
+	summaryFile    = "summary"
+	lastPromptFile = "last_prompt"
+	lastToolsFile  = "last_tools"
+)
+
+// writeRaw 原子写一个裸文件(write-then-rename)。失败静默。
+func (m *Manager) writeRaw(name, content string) {
+	path := filepath.Join(m.rootDir, name)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+}
+
+// readRaw 读一个裸文件,不存在返回空串。
+func (m *Manager) readRaw(name string) string {
+	data, err := os.ReadFile(filepath.Join(m.rootDir, name))
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // usageSnapshot 是 stateFile 内嵌的 token 用量快照,字段名对齐 DeepSeek API。
@@ -117,20 +151,39 @@ func (m *Manager) touchMeta() {
 	_ = os.WriteFile(path, data, 0o644)
 }
 
-// SaveSummary 保存压缩摘要并 reset total_turns 为压缩后保留的轮数。
-func (m *Manager) SaveSummary(text string, kept int) error {
+// SaveSummary 保存压缩摘要到裸文件。
+func (m *Manager) SaveSummary(text string) error {
+	m.writeRaw(summaryFile, text)
+	return nil
+}
+
+// SavePrefixSnapshot 记录"上次实际发送"的前缀快照:签名进 state.json,system 文本和 tool specs
+// 各进裸文件(避免高频整体重写大 JSON + tool specs 二次转义)。失败静默,不影响主流程。
+func (m *Manager) SavePrefixSnapshot(sig, model, systemPrompt, toolSpecsJSON string) {
+	m.writeRaw(lastPromptFile, systemPrompt)
+	m.writeRaw(lastToolsFile, toolSpecsJSON)
 	path := filepath.Join(m.rootDir, "state.json")
 	var s stateFile
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &s)
 	}
-	s.Summary = text
-	s.TotalTurns = kept
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return err
+	s.PrefixSig = sig
+	s.PrefixModel = model
+	data, _ := json.MarshalIndent(s, "", "  ")
+	_ = os.WriteFile(path, data, 0o644)
+}
+
+// LoadPrefixSnapshot 读取上次的前缀快照(签名/model 来自 state.json,system/tools 来自裸文件)。
+func (m *Manager) LoadPrefixSnapshot() (sig, model, systemPrompt, toolSpecsJSON string) {
+	path := filepath.Join(m.rootDir, "state.json")
+	if data, err := os.ReadFile(path); err == nil {
+		var s stateFile
+		if json.Unmarshal(data, &s) == nil {
+			sig = s.PrefixSig
+			model = s.PrefixModel
+		}
 	}
-	return os.WriteFile(path, data, 0o644)
+	return sig, model, m.readRaw(lastPromptFile), m.readRaw(lastToolsFile)
 }
 
 // SaveUsage 写入 last_usage 字段。失败静默,不影响主流程。
@@ -165,18 +218,16 @@ func (m *Manager) LoadUsage() *Usage {
 	return s.LastUsage
 }
 
-// LoadSummary 从 state.json 读取压缩摘要和 total_turns。
-func (m *Manager) LoadSummary() (summary string, totalTurns int) {
-	path := filepath.Join(m.rootDir, "state.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", 0
+// LoadSummary 读取压缩摘要:优先裸文件,为空时回退到旧版本遗留在 state.json 的 summary 字段。
+func (m *Manager) LoadSummary() string {
+	if s := m.readRaw(summaryFile); s != "" {
+		return s
 	}
-	var s stateFile
-	if err := json.Unmarshal(data, &s); err != nil {
-		return "", 0
+	var st stateFile // 旧格式回退
+	if data, err := os.ReadFile(filepath.Join(m.rootDir, "state.json")); err == nil {
+		_ = json.Unmarshal(data, &st)
 	}
-	return s.Summary, s.TotalTurns
+	return st.Summary
 }
 
 // SaveGob 以 gob 格式将 v 编码到 filename,写入 session 目录。原子写(write-then-rename)。
@@ -236,7 +287,6 @@ func (m *Manager) todayPath() string {
 // Append 写一条记录到今天的 jsonl。
 // 只接受 role = "user" / "assistant",其他 role(system/tool)静默丢弃 —— 主对话才入会话文件。
 // 空 content 也跳过(流式中途的占位等)。
-// user 消息写入后同步递增 state.json 的 total_turns。
 func (m *Manager) Append(role, content string) error {
 	if role != "user" && role != "assistant" {
 		return nil
@@ -250,25 +300,7 @@ func (m *Manager) Append(role, content string) error {
 	}
 	defer f.Close()
 	enc := json.NewEncoder(f)
-	if err := enc.Encode(Entry{Ts: time.Now(), Role: role, Content: content}); err != nil {
-		return err
-	}
-	if role == "user" {
-		m.incrTotalTurns()
-	}
-	return nil
-}
-
-// incrTotalTurns 递增 state.json 的 total_turns。失败静默。
-func (m *Manager) incrTotalTurns() {
-	path := filepath.Join(m.rootDir, "state.json")
-	var s stateFile
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &s)
-	}
-	s.TotalTurns++
-	data, _ := json.MarshalIndent(s, "", "  ")
-	_ = os.WriteFile(path, data, 0o644)
+	return enc.Encode(Entry{Ts: time.Now(), Role: role, Content: content})
 }
 
 // LoadRecentTurns 从最新日期文件倒着读,凑足 n 个 user→assistant 对停。

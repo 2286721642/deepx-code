@@ -9,36 +9,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// subAgentToolDenylist 列出子 agent 不应该看到的工具名。
+// buildSubAgentToolSpecs 子 agent 工具集 = 按 RoleSubAgent 过滤的工具,与主 agent 保持一致的口径。
 //
-// 准则:子 agent 是"被分派一个 plan 节点执行"的受控上下文,工具集应窄于主对话。
-// 当前排除两类:
-//   - SwitchModel:子 agent 角色由 CreatePlan 节点的 model 字段静态指定,不应该
-//     运行时再切。这工具的 Executor 也是 nil(主循环里拦截改 entry/role),子 agent
-//     循环没对应分支,真调到会段错误。
-//   - CreatePlan:DAG 调度只在主 agent 循环里实现,子 agent 调用也产生不了真 DAG,
-//     反而可能让模型自我递归("我要再拆个子 plan")。即使不递归也只是个无效占位。
-//
-// 把白名单/黑名单放在这里(而不是 tools/tools.go 的 Roles 字段),是因为这是
-// **子 agent 自己的策略**,跟 subagent 的 system prompt 同地维护更直观:同一个文件
-// 看到"我是什么角色 + 我用什么工具 + 我不该干什么"。
-var subAgentToolDenylist = map[string]bool{
-	"SwitchModel": true,
-	"CreatePlan":  true,
-}
-
-// buildSubAgentToolSpecs 子 agent 工具白名单。
-// 在 RoleSubAgent 角色过滤之上,再剔除 subAgentToolDenylist 里的工具。
+// 不再硬过滤 CreatePlan / SwitchModel:改为靠子 agent 系统提示词明确"禁止 CreatePlan / SwitchModel"
+// 来约束(见 runSubAgent 的尾部)。即使模型不听话调了,这两个工具的 Executor 为 nil,
+// executeTool 有纵深防护(返回失败而非 panic),所以安全。
 func buildSubAgentToolSpecs(mode AgentMode) []tools.OpenAIToolSpec {
-	base := buildToolSpecs(mode, tools.RoleSubAgent)
-	out := make([]tools.OpenAIToolSpec, 0, len(base))
-	for _, t := range base {
-		if subAgentToolDenylist[t.Function.Name] {
-			continue
-		}
-		out = append(out, t)
-	}
-	return out
+	return buildToolSpecs(mode, tools.RoleSubAgent)
 }
 
 // subAgentInput 是一次子 agent 调用的全部依赖。
@@ -51,6 +28,7 @@ type subAgentInput struct {
 	UserTask     string            // 用户原始消息,作为背景给子 agent
 	Predecessors map[string]string // 已完成上游节点的 summary
 	Workspace    string
+	SkillCatalog string // 与主 agent 同一份 skill 目录,使子 agent 也能用 LoadSkill
 	MaxTokens    int
 	Mode         AgentMode
 }
@@ -65,6 +43,23 @@ type subAgentResult struct {
 // 因为子 agent 任务粒度更小;做不完直接 fail,scheduler 会把该节点标 failed 而不影响其他节点。
 const subAgentMaxRounds = 50
 
+// subAgentCtxBudgetPct 是子 agent convo 占模型上下文窗口的上限百分比;超过即中止本节点。
+// 子 agent 不压缩,留 20% 余量给本轮输入+输出,避免撑爆窗口导致 API 脏失败。
+const subAgentCtxBudgetPct = 80
+
+// estimateConvoTokens 粗估一段 convo 的 token 数(沿用项目 ~3 字符/token 的口径)。
+// 只算文本主体(Content + ReasoningContent + 工具调用参数),够做预算判断。
+func estimateConvoTokens(convo []ChatMessage) int {
+	chars := 0
+	for _, m := range convo {
+		chars += len([]rune(m.Content)) + len([]rune(m.ReasoningContent))
+		for _, tc := range m.ToolCalls {
+			chars += len([]rune(tc.Function.Arguments))
+		}
+	}
+	return chars / 3
+}
+
 // runSubAgent 执行单个 plan/task 节点。
 //
 // 行为:
@@ -74,14 +69,15 @@ const subAgentMaxRounds = 50
 //   - 不向 TUI 发 TokenMsg / ToolCallStartMsg 等可见事件,子 agent 中间过程完全隐藏
 //   - 最终 assistant content 作为 Summary 返回;失败 → Err
 func runSubAgent(ctx context.Context, in subAgentInput) subAgentResult {
-	// 构造系统提示。子 agent 看到的上下文就这几行,简短紧凑。
+	// 系统提示 = 与主 agent 共用的核心(身份+规则+workspace+skill)+ 子 agent 专属尾部。
+	// 共用核心逐字节一致 → 与主 agent / 同模型兄弟节点共享缓存前缀;同时子 agent 也拿到了
+	// 安全/模式规则和 skill 目录(LoadSkill 因此可用)。专属部分放尾部,只有它是 miss。
 	var sb strings.Builder
-	sb.WriteString("你是 deepx 中的子 agent,只负责完成一个被分派的 plan 项,不要再 SwitchModel、也不要 CreatePlan。\n")
-	sb.WriteString("工作目录: ")
-	sb.WriteString(in.Workspace)
-	sb.WriteString("\n用户的原始任务背景: ")
+	sb.WriteString(coreSystemPrompt(in.Workspace, in.SkillCatalog))
+	sb.WriteString("\n\n# 子 agent 任务\n你是 deepx 的子 agent,只负责完成下面这一项,禁止 CreatePlan / SwitchModel(只做被分派的事,不要再拆分或换模型)。")
+	sb.WriteString("\n- 用户的原始任务背景: ")
 	sb.WriteString(in.UserTask)
-	sb.WriteString("\n你这一项的具体目标: ")
+	sb.WriteString("\n- 你这一项的具体目标: ")
 	sb.WriteString(in.NodeTitle)
 	if len(in.Predecessors) > 0 {
 		sb.WriteString("\n\n上游已完成节点的产出 (作为上下文使用):")
@@ -110,12 +106,26 @@ func runSubAgent(ctx context.Context, in subAgentInput) subAgentResult {
 		close(drained)
 	}()
 
+	// 上下文预算熔断:子 agent 不做压缩,convo 只增不减,读几个大文件就可能撑爆窗口。
+	// 每轮前估算,超过窗口的 ctxBudgetPct 就主动中止(干净失败),而不是等 API 报错或耗满轮数。
+	ctxWin := in.Entry.ContextWindow
+	if ctxWin <= 0 {
+		ctxWin = 65536
+	}
+	ctxBudget := ctxWin * subAgentCtxBudgetPct / 100
+
 	for round := 0; round < subAgentMaxRounds; round++ {
 		// 检查 context 是否取消(ESC/退出)
 		if ctx.Err() != nil {
 			close(silent)
 			<-drained
 			return subAgentResult{Err: ctx.Err()}
+		}
+		// 上下文预算熔断:超预算就停,避免脏失败(API 超长报错)和卡死时的 token 浪费。
+		if est := estimateConvoTokens(convo); est >= ctxBudget {
+			close(silent)
+			<-drained
+			return subAgentResult{Err: fmt.Errorf("子 agent [%s] 上下文超预算(~%d/%d tokens),中止", in.NodeID, est, ctxWin)}
 		}
 		// 不主动 strip reasoning:本轮锁定模型,thinking 模型仍正常回传,
 		// 非 thinking 模型忽略 history 里的 reasoning_content 字段(omitempty 已处理空值)。
@@ -155,7 +165,8 @@ func runSubAgent(ctx context.Context, in subAgentInput) subAgentResult {
 			switch tc.Function.Name {
 			case "UpdatePlanStatus":
 				// 子 agent 想自报状态,吞掉给 OK。scheduler 才是状态来源。
-				result = tools.ToolResult{Output: "已记录", Success: true}
+				// (只用 Output 拼 tool 消息,Success 不读,故不设)
+				result = tools.ToolResult{Output: "已记录"}
 			default:
 				result = executeTool(tc, in.Mode, tools.RoleSubAgent)
 			}

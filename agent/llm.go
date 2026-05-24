@@ -74,6 +74,14 @@ type HistoryUpdateMsg struct {
 	History []ChatMessage
 }
 
+// PrefixSnapshotMsg 携带本轮"实际发送"的前缀(system 文本 + tool specs JSON)。
+// TUI 持久化它,用于重启变化检测与缓存友好压缩复刻旧前缀。每轮发一次。
+type PrefixSnapshotMsg struct {
+	Model         string // 本轮实际使用的 model ID(缓存按模型分,压缩需同模型才命中)
+	SystemPrompt  string
+	ToolSpecsJSON string
+}
+
 // === OpenAI 协议结构 ===
 
 // ChatMessage 是历史记录与请求体共用的消息结构。
@@ -234,17 +242,79 @@ func CallOnce(ctx context.Context, apiKey, baseURL, modelID string, convo []Chat
 	return result.Choices[0].Message.Content, nil
 }
 
+// CallWithTools 与 CallOnce 类似(非流式、返回 content),但额外带上 tools 参数。
+// 用于缓存友好的压缩:摘要请求复刻会话的 [system][tools][history] 前缀,只在末尾追加压缩指令,
+// 从而命中已缓存的前缀(tools 必须和被缓存的那次逐字节一致才命中,故由调用方传入旧 specs)。
+func CallWithTools(ctx context.Context, apiKey, baseURL, modelID string, convo []ChatMessage, toolSpecs []tools.OpenAIToolSpec, maxTokens int) (string, error) {
+	body, err := json.Marshal(chatRequest{
+		Model:     modelID,
+		MaxTokens: maxTokens,
+		Stream:    false,
+		Messages:  convo,
+		Tools:     toolSpecs,
+	})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+	}
+	var result chatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("no choices in response")
+	}
+	return result.Choices[0].Message.Content, nil
+}
+
+// MarshalToolSpecs 把工具 specs 序列化成 JSON 字符串,供快照持久化(逐字节)。
+func MarshalToolSpecs(toolSpecs []tools.OpenAIToolSpec) string {
+	b, err := json.Marshal(toolSpecs)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// UnmarshalToolSpecs 从快照 JSON 还原工具 specs,供压缩复刻旧前缀。空串/失败返回 nil。
+func UnmarshalToolSpecs(s string) []tools.OpenAIToolSpec {
+	if s == "" {
+		return nil
+	}
+	var out []tools.OpenAIToolSpec
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
 // === 入口 ===
 
 // StartStream 启动一个对话回合。入口由 RouteByKeyword 决定起手模型(flash/pro),
 // 本轮锁定该模型不再切换。复杂任务由模型主动调 CreatePlan 拆分,plan 节点的 model 字段
 // 由 sub-agent 按需路由,实现细粒度的模型选择。
-// BuildSystemPrompt 构建当前版本的 system prompt,供 StartStream 和 gob 恢复时共用。
-// workspace 和 skillCatalog 由调用方传入,确保版本一致性。
-func BuildSystemPrompt(workspace, skillCatalog string) string {
+// coreSystemPrompt 是主 agent 与子 agent **共用**的稳定头部:身份 + 行为规则 + workspace + skill 目录。
+// 主/子在同一 workspace、同一 skill 目录下逐字节一致 —— 这是缓存前缀共享的基础。
+// 主 agent 在其后接「会话摘要」,子 agent 在其后接「节点目标」等专属尾部(见各自构造处)。
+func coreSystemPrompt(workspace, skillCatalog string) string {
 	base := fmt.Sprintf(`你是 DeepX,一个自主编码 agent,跑在用户的本地开发环境里。
 
-通过工具帮用户:理解代码 · 编辑文件 · 写代码 · 调试 · 执行 shell 命令 · 拆任务 · 推理架构。
+通过工具帮用户:理解代码 · 编辑文件 · 写代码 · 调试 · 执行 shell 命令 · 拆任务 · 推理架构。1
 
 # 核心原则
 - 准确、简洁,行动优先于解释
@@ -290,6 +360,17 @@ func BuildSystemPrompt(workspace, skillCatalog string) string {
 	return base
 }
 
+// BuildSystemPrompt 主 agent 的 system prompt = 共用核心 + 会话摘要尾部。
+// 摘要垫在最后:核心 + skill 那段会话内字节不变,即使摘要每次压缩都变,前缀仍命中,
+// 失效点只从摘要开始(详见前缀缓存优化设计)。
+func BuildSystemPrompt(workspace, skillCatalog, summary string) string {
+	base := coreSystemPrompt(workspace, skillCatalog)
+	if summary != "" {
+		base += "\n\n# 会话摘要(此前对话的压缩,延续上下文)\n" + summary
+	}
+	return base
+}
+
 func StartStream(
 	ctx context.Context,
 	models ModelConfig,
@@ -298,6 +379,7 @@ func StartStream(
 	mode AgentMode,
 	workspace string,
 	skillCatalog string, // 见下方 system prompt 注入逻辑;空串表示当前没有 skill
+	summary string, // 会话压缩摘要,垫在 system prompt 末尾;空串表示尚未压缩
 ) (tea.Cmd, <-chan tea.Msg) {
 	ch := make(chan tea.Msg, 128)
 
@@ -317,7 +399,7 @@ func StartStream(
 			// 在首轮注入 system 提示:当前工作目录 + 任务拆解 + plan 节点的 model 选择指南。
 			// 入口模型已经由 keyword router 决定(flash 或 pro);模型自行判断要不要 CreatePlan 拆任务。
 			if len(convo) == 0 || convo[0].Role != "system" {
-				sysBase := BuildSystemPrompt(workspace, skillCatalog)
+				sysBase := BuildSystemPrompt(workspace, skillCatalog, summary)
 				convo = append([]ChatMessage{{Role: "system", Content: sysBase}}, convo...)
 			}
 		}
@@ -344,6 +426,16 @@ func StartStream(
 		ch <- ModelSwitchMsg{Role: role, ModelID: currentEntry.Model}
 
 		toolSpecs := buildToolSpecs(mode, role)
+
+		// 发出本轮"实际发送"的前缀快照(system 文本 + tool specs JSON),供 TUI 持久化:
+		// 重启变化检测 + 缓存友好压缩复刻旧前缀。tool specs 随 mode/role 变,故必须存实际值。
+		{
+			sysContent := ""
+			if len(convo) > 0 && convo[0].Role == "system" {
+				sysContent = convo[0].Content
+			}
+			ch <- PrefixSnapshotMsg{Model: currentEntry.Model, SystemPrompt: sysContent, ToolSpecsJSON: MarshalToolSpecs(toolSpecs)}
+		}
 
 		// 100 轮上限给复杂多步任务留足空间(read → analyze → edit → test → fix 这种循环)。
 		// 触顶通常说明 LLM 在死循环或反复试错,需要返回错误让用户介入。
@@ -431,6 +523,7 @@ func StartStream(
 								UserTask:     latestUserTask,
 								Predecessors: preds,
 								Workspace:    workspace,
+								SkillCatalog: skillCatalog,
 								MaxTokens:    maxTokens,
 								Mode:         mode,
 							})

@@ -272,13 +272,6 @@ func sumHistoryChars(h []agent.ChatMessage) int {
 	return total
 }
 
-// estimateTokens 把 char 数粗估成 token 数。
-// 经验值: 英文 ~4 chars/token, 中文 ~1.5 chars/token, 混合按 3 取中。
-// 这只是仪表盘显示用,不影响实际 API 调用计费。
-func estimateTokens(chars int) int {
-	return chars / 3
-}
-
 // formatTokenCount 把 token 计数格式化成紧凑字符串: 12 / 1.2K / 12.4K。
 func formatTokenCount(n int) string {
 	if n < 1024 {
