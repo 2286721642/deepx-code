@@ -44,6 +44,11 @@ var (
 	toolsBarColor     = lipgloss.Color("215") // 琥珀
 	systemBarColor    = lipgloss.Color("242") // 中灰
 
+	// 用户回合做成"气泡":钢蓝底 + 白字 + 亮青块条,延续"用户=蓝"的语义,跟左对齐的 assistant/tools 错开。
+	userBubbleBg  = lipgloss.Color("24")  // 深钢蓝底
+	userBubbleFg  = lipgloss.Color("231") // 白字
+	userBubbleBar = lipgloss.Color("51")  // 亮青块条
+
 	// 色条总列宽 = 缩进 + 竖线 + 1 空格。
 	// 一级(user/assistant/system):2 列 = ┃ + 空格;不缩进。
 	// 二级(tools):4 列 = 2 列缩进 + │ + 空格;视觉上嵌入到一级段内部。
@@ -97,6 +102,30 @@ func applyQuoteBar(content, kind string) string {
 	lines := strings.Split(content, "\n")
 	for i, ln := range lines {
 		lines[i] = prefix + ln
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderUserBubble 把用户回合渲染成气泡:左侧 1 列亮蓝块条 ▌ + 整段浅色底,按视口宽度铺满。
+// 不走 glamour —— 用户输入是纯文本(路径 / 代码片段居多),气泡里按字面显示反而更清晰,
+// 也省掉 markdown 转义带来的意外(见 backslashSentinel)。lipgloss 的 Width 负责按宽换行 + 背景铺满。
+func renderUserBubble(text string, viewportW int) string {
+	if viewportW <= 0 || text == "" {
+		return text
+	}
+	boxW := viewportW - 1 // 左侧块条占 1 列
+	if boxW < 1 {
+		boxW = 1
+	}
+	box := lipgloss.NewStyle().
+		Background(userBubbleBg).
+		Foreground(userBubbleFg).
+		Width(boxW).
+		Padding(0, 1)
+	bar := lipgloss.NewStyle().Foreground(userBubbleBar).Render("▌")
+	lines := strings.Split(box.Render(text), "\n")
+	for i, ln := range lines {
+		lines[i] = bar + ln
 	}
 	return strings.Join(lines, "\n")
 }
