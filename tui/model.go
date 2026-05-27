@@ -1814,6 +1814,10 @@ func (m *model) renderChatBaseContent(w int) string {
 	// Update 工具的 ~~~diff ... ~~~ 块单独走 colorizeDiffBlock 染色,fence 行不显示,
 	// `-` 行染红、`+` 行染绿、"... (N more lines)" 染暗 —— 跟 markdown diff 渲染观感一致。
 	content := m.chatContent.Render(w, func(raw, kind string, width int) string {
+		// 用户回合走气泡(左块条 + 整段底色),不走 glamour / 色条,见 renderUserBubble。
+		if kind == kindUser {
+			return renderUserBubble(strings.TrimRight(ensureEmojiSpacing(raw), "\n"), width)
+		}
 		var inner string
 		if kind == kindTools {
 			inner = colorizeDiffBlock(ensureEmojiSpacingANSI(ensureEmojiSpacing(raw)))
