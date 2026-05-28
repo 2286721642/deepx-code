@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"deepx/agent"
+	"deepx/config"
 	"deepx/mcp"
 	"deepx/session"
 	"deepx/skill"
@@ -48,10 +49,12 @@ type model struct {
 	//   - setupRequired   = true 表示无有效 yaml(首次启动);不允许 Esc 关闭,Ctrl+C 才退出
 	//   - setupInput      = api key 输入框
 	//   - setupErr        = 错误回显(保存失败 / 输入为空等)
-	showSetup     bool
-	setupRequired bool
-	setupInput    textinput.Model
-	setupErr      string
+	//   - setupProviderIdx= 当前选中的模型供应商下标(config.ProviderOptions),←/→ 切换
+	showSetup        bool
+	setupRequired    bool
+	setupInput       textinput.Model
+	setupErr         string
+	setupProviderIdx int
 
 	// activeModelRole 是上一轮 / 当前流的实际生效角色 ("flash" / "pro")。
 	// 每条新用户消息默认从 flash 起手;agent.ModelSwitchMsg 到达时更新为 pro。
@@ -542,7 +545,7 @@ func (m model) submitUserInput(input string) (model, tea.Cmd) {
 	cmd, ch := agent.StartStream(
 		ctx,
 		m.models,
-		m.history, maxTokens,
+		m.history,
 		m.mode,
 		workspace,
 		m.skillCatalog,
@@ -796,6 +799,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+c":
 				return m, tea.Quit
+			case "left", "right":
+				// 切换模型供应商(deepseek / mimo …)
+				n := len(config.ProviderOptions)
+				if n > 0 {
+					if msg.String() == "left" {
+						m.setupProviderIdx = (m.setupProviderIdx - 1 + n) % n
+					} else {
+						m.setupProviderIdx = (m.setupProviderIdx + 1) % n
+					}
+				}
+				return m, nil
 			case "enter":
 				cmd := m.submitSetup()
 				return m, cmd

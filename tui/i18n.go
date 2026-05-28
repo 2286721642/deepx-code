@@ -243,7 +243,8 @@ var translations = map[string]map[Lang]string{
 			"Saves take effect immediately; Esc to cancel.\n" +
 			"To change base_url / model id only, edit ~/.deepx/model.yaml directly and restart.",
 	},
-	"setup.input_label": {LangZH: "API key:", LangEN: "API key:"},
+	"setup.provider_label": {LangZH: "模型提供商 (←/→ 切换):", LangEN: "Model provider (←/→ to switch):"},
+	"setup.input_label":    {LangZH: "API key:", LangEN: "API key:"},
 	"setup.error.empty": {
 		LangZH: "API key 不能为空",
 		LangEN: "API key cannot be empty",

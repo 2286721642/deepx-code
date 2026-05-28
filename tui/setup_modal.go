@@ -82,6 +82,18 @@ func (m model) setupModalBlock() string {
 	}
 	hintBlock := lipgloss.NewStyle().Foreground(subtleColor).Render(hint)
 
+	// 模型供应商选择器:横向列出 config.ProviderOptions,选中项高亮,←/→ 切换。
+	providerLabel := lipgloss.NewStyle().Foreground(dimColor).Render(T("setup.provider_label"))
+	opts := make([]string, 0, len(config.ProviderOptions))
+	for i, p := range config.ProviderOptions {
+		if i == m.setupProviderIdx {
+			opts = append(opts, lipgloss.NewStyle().Foreground(highlightColor).Bold(true).Render("‹ "+p+" ›"))
+		} else {
+			opts = append(opts, lipgloss.NewStyle().Foreground(subtleColor).Render("  "+p+"  "))
+		}
+	}
+	providerBlock := providerLabel + "\n  " + strings.Join(opts, " ")
+
 	inputLabel := lipgloss.NewStyle().Foreground(dimColor).Render(T("setup.input_label"))
 	inputBlock := inputLabel + "\n  " + m.setupInput.View()
 
@@ -99,7 +111,7 @@ func (m model) setupModalBlock() string {
 		footer = lipgloss.NewStyle().Foreground(dimColor).Render(T("setup.footer.reconfig"))
 	}
 
-	parts := []string{title, "", hintBlock, "", inputBlock}
+	parts := []string{title, "", hintBlock, "", providerBlock, "", inputBlock}
 	if errBlock != "" {
 		parts = append(parts, "", errBlock)
 	}
@@ -121,7 +133,7 @@ func (m model) setupModalBlock() string {
 
 // submitSetup 处理 modal 内 Enter 的提交逻辑:
 //   - 校验输入非空
-//   - 用 config.Default 构造 yaml(沿用之前模板)
+//   - 按选中的供应商用 config.DefaultFor 构造 yaml
 //   - 落盘
 //   - 重新 Load(保证内存版本和磁盘一致)
 //   - 把 model 内的 m.models 替换为新配置
@@ -134,7 +146,11 @@ func (m *model) submitSetup() tea.Cmd {
 		m.setupErr = T("setup.error.empty")
 		return nil
 	}
-	cfg := config.Default(val)
+	provider := ""
+	if m.setupProviderIdx >= 0 && m.setupProviderIdx < len(config.ProviderOptions) {
+		provider = config.ProviderOptions[m.setupProviderIdx]
+	}
+	cfg := config.DefaultFor(provider, val) // 空/未知供应商 DefaultFor 会回退 deepseek
 	if err := config.Save(cfg); err != nil {
 		m.setupErr = fmt.Sprintf(T("setup.error.save"), err)
 		return nil

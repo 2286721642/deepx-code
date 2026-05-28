@@ -30,7 +30,6 @@ type subAgentInput struct {
 	Predecessors map[string]string // 已完成上游节点的 summary
 	Workspace    string
 	SkillCatalog string // 与主 agent 同一份 skill 目录,使子 agent 也能用 LoadSkill
-	MaxTokens    int
 	Mode         AgentMode
 }
 
@@ -133,7 +132,7 @@ func runSubAgent(ctx context.Context, in subAgentInput) subAgentResult {
 		content, reasoning, toolCalls, _, err := streamOnce(
 			ctx,
 			in.Entry.APIKey, in.Entry.BaseURL, in.Entry.Model,
-			convo, in.MaxTokens, toolSpecs, silent,
+			convo, in.Entry.MaxTokens, toolSpecs, silent,
 		)
 		if err != nil {
 			close(silent)

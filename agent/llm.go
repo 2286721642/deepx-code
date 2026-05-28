@@ -35,6 +35,7 @@ type ModelEntry struct {
 	Model         string
 	APIKey        string
 	ContextWindow int // 上下文窗口大小(tokens)
+	MaxTokens     int // 单次生成的 completion 上限(tokens);字段顺序需与 config.ModelEntry 一致
 }
 
 // ModelConfig 双模型配置。Flash 处理简单/查询型任务,Pro 处理复杂/规划型任务。
@@ -167,12 +168,33 @@ type streamOptions struct {
 }
 
 // UsageInfo 单次 API 调用的 token 用量,含缓存命中信息。
+//
+// 缓存命中字段各供应商口径不同:DeepSeek 直接给 prompt_cache_hit_tokens;
+// OpenAI 标准(mimo 等)放在嵌套的 prompt_tokens_details.cached_tokens。
+// normalize() 把后者回填到 PromptCacheHitTokens,使下游显示逻辑只认一套字段。
 type UsageInfo struct {
 	PromptTokens          int `json:"prompt_tokens"`
 	CompletionTokens      int `json:"completion_tokens"`
 	TotalTokens           int `json:"total_tokens"`
-	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
-	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`  // DeepSeek 专有
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"` // DeepSeek 专有
+	PromptTokensDetails   struct {
+		CachedTokens int `json:"cached_tokens"` // OpenAI 标准(mimo 等)
+	} `json:"prompt_tokens_details"`
+}
+
+// normalize 统一缓存命中口径:DeepSeek 字段缺失而 OpenAI 标准字段存在时,
+// 用 cached_tokens 回填 hit,并据 prompt_tokens 推出 miss。
+func (u *UsageInfo) normalize() {
+	if u == nil {
+		return
+	}
+	if u.PromptCacheHitTokens == 0 && u.PromptTokensDetails.CachedTokens > 0 {
+		u.PromptCacheHitTokens = u.PromptTokensDetails.CachedTokens
+		if miss := u.PromptTokens - u.PromptCacheHitTokens; miss > 0 {
+			u.PromptCacheMissTokens = miss
+		}
+	}
 }
 
 // UsageMsg 从 agent goroutine 发给 TUI 的单次 API 用量。
@@ -379,7 +401,6 @@ func StartStream(
 	ctx context.Context,
 	models ModelConfig,
 	history []ChatMessage,
-	maxTokens int,
 	mode AgentMode,
 	workspace string,
 	skillCatalog string, // 见下方 system prompt 注入逻辑;空串表示当前没有 skill
@@ -454,7 +475,7 @@ func StartStream(
 			assistantContent, reasoning, toolCalls, usage, err := streamOnce(
 				ctx,
 				currentEntry.APIKey, currentEntry.BaseURL, currentEntry.Model,
-				convo, maxTokens, toolSpecs, ch,
+				convo, currentEntry.MaxTokens, toolSpecs, ch,
 			)
 			if err != nil {
 				// context 取消是主动中断,不报 Error 给 UI。
@@ -529,7 +550,6 @@ func StartStream(
 								Predecessors: preds,
 								Workspace:    workspace,
 								SkillCatalog: skillCatalog,
-								MaxTokens:    maxTokens,
 								Mode:         mode,
 							})
 							if res.Err != nil {
@@ -707,6 +727,7 @@ func streamOnce(
 		}
 		// stream_options.include_usage: 最后 chunk 有 usage、choices 为空
 		if chunk.Usage != nil {
+			chunk.Usage.normalize() // 统一各供应商的缓存命中口径(mimo 等走 prompt_tokens_details)
 			lastUsage = chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
