@@ -8,7 +8,6 @@ import (
 )
 
 const (
-	maxTokens = 384 * 1024
 	// rightPanelWidth 右栏 section 区固定列宽。窄到能塞下两条 ◆ TITLE 行,宽到 model id
 	// 不被 truncate 成 "deeps…"。32 跟 HEAD 一致,主流 IDE/终端默认宽度 (>= 100 列) 下
 	// 至少给 chat 留 60+ 列。
