@@ -31,10 +31,13 @@ type PlanItem struct {
 
 // === TUI 事件 ===
 
-// PlanCreatedMsg 通知 TUI: LLM 刚通过 CreatePlan 工具产出了一份规划。
+// PlanCreatedMsg 通知 TUI: LLM 刚产出一份规划。
+// Kind 区分来源:"todo"(Todo 工具,顺序清单)/ "createplan"(CreatePlan,并发 DAG)——
+// 右栏据此分别在「计划/Plan」和「步骤/Step」两段显示。
 // TUI 应初始化 plan 状态,所有 item 初始 Status=Pending。
 type PlanCreatedMsg struct {
 	Plans []PlanItem
+	Kind  string
 }
 
 // TaskStatusMsg 通知 TUI: 某个 plan 节点的状态变了。

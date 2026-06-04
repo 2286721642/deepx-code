@@ -34,6 +34,7 @@ func slashCommands() []struct{ name, desc string } {
 		{"/sessions", T("cmd.sessions.desc")},
 		{"/status", T("cmd.status.desc")},
 		{"/sandbox", T("cmd.sandbox.desc")},
+		{"/working-mode", T("cmd.workingmode.desc")},
 		{"/undo", T("cmd.undo.desc")},
 		{"/help", T("cmd.help.desc")},
 	}

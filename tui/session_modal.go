@@ -80,9 +80,11 @@ func (m *model) loadCurrentConversation() {
 	m.history = nil
 	m.summary = ""
 	m.plan = nil
+	m.planKind = ""
 	m.pendingUserText = ""
 	m.chatContent.Reset()
 	if m.session != nil {
+		m.workingMode = agent.NormalizeWorkingMode(m.session.LoadWorkingMode()) // 切会话同步工作模式
 		m.summary = m.session.LoadSummary()
 		var gobHistory []agent.ChatMessage
 		if err := m.session.LoadGob("history.gob", &gobHistory); err == nil && len(gobHistory) > 0 {

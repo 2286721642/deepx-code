@@ -473,6 +473,7 @@ func StartStream(
 	skillCatalog string, // 见下方 system prompt 注入逻辑;空串表示当前没有 skill
 	summary string, // 会话压缩摘要,垫在 system prompt 末尾;空串表示尚未压缩
 	forceRole string, // 用户锁定的模型角色("flash"/"pro");空串或 "auto" 表示走关键词路由
+	workingMode WorkingMode, // 工作模式:每轮把对应 skill 引导追加到最后一条 user 消息(renderWorkingMode)
 ) (tea.Cmd, <-chan tea.Msg) {
 	ch := make(chan tea.Msg, 128)
 
@@ -557,7 +558,7 @@ func StartStream(
 			assistantContent, reasoning, toolCalls, finishReason, usage, err := streamOnce(
 				ctx,
 				currentEntry.APIKey, currentEntry.BaseURL, currentEntry.Model,
-				renderConvoImages(convo, currentEntry.Vision), currentEntry.MaxTokens, toolSpecs,
+				renderConvoImages(renderWorkingMode(convo, workingMode), currentEntry.Vision), currentEntry.MaxTokens, toolSpecs,
 				currentEntry.ReasoningEffort, currentEntry.Thinking,
 				ch,
 			)
@@ -570,7 +571,7 @@ func StartStream(
 				assistantContent, reasoning, toolCalls, finishReason, usage, err = streamOnce(
 					ctx,
 					currentEntry.APIKey, currentEntry.BaseURL, currentEntry.Model,
-					renderConvoImages(convo, false), currentEntry.MaxTokens, toolSpecs,
+					renderConvoImages(renderWorkingMode(convo, workingMode), false), currentEntry.MaxTokens, toolSpecs,
 					currentEntry.ReasoningEffort, currentEntry.Thinking,
 					ch,
 				)
@@ -646,7 +647,7 @@ func StartStream(
 						result = tools.ToolResult{Output: perr.Error(), Success: false}
 					} else {
 						// 1. 通知 UI 渲染 plan 树
-						ch <- PlanCreatedMsg{Plans: plans}
+						ch <- PlanCreatedMsg{Plans: plans, Kind: "createplan"}
 						// 2. 拍平成 DAG 节点并同步执行
 						nodes := flattenPlans(plans)
 						exec := func(n *schedulerNode, preds map[string]string) (string, error) {
@@ -698,7 +699,7 @@ func StartStream(
 						result = tools.ToolResult{Output: perr.Error(), Success: false}
 					} else {
 						lastTodo = items // 记录最新快照,供完成度门禁判断是否还有未完成项
-						ch <- PlanCreatedMsg{Plans: items}
+						ch <- PlanCreatedMsg{Plans: items, Kind: "todo"}
 						done := 0
 						for _, it := range items {
 							if it.Status == PlanStatusDone {

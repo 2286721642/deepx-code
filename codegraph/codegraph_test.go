@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // 写一个临时 Go 文件,索引后验证符号 / 定义 / 引用 / 文件结构都对。
@@ -79,4 +80,43 @@ const Version = "1.0"
 	if len(imps) != 1 || imps[0].To != "fmt" {
 		t.Fatalf("demo.go imports 应为 [fmt], got %+v", imps)
 	}
+}
+
+// 编辑文件后状态会从"就绪"降级为"更新",并在防抖窗口后由后台自动重建回"就绪",
+// 不再一直卡在"更新"(需要等下次显式查询才回正)。
+func TestInvalidateAutoRebuildsStatus(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module demo\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package demo\n\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ix := NewIndex(dir)
+	if _, err := ix.Graph(); err != nil { // 先构建一次 → 就绪
+		t.Fatal(err)
+	}
+	if got := ix.Status(); got != StatusReady && got != StatusDegraded {
+		t.Fatalf("构建后状态 = %v, 期望就绪/降级", got)
+	}
+
+	// 模拟 agent 改了文件:缓存失效 → 应先变"更新"。
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package demo\n\nfunc A() {}\nfunc B() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ix.Invalidate()
+	if got := ix.Status(); got != StatusStale {
+		t.Fatalf("Invalidate 后状态 = %v, 期望 stale", got)
+	}
+
+	// 防抖窗口后,后台应自动重建回就绪 —— 无需任何显式查询。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s := ix.Status(); s == StatusReady || s == StatusDegraded {
+			return // 成功:状态自动回正
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("Invalidate 后 3s 内状态未自动回到就绪,仍是 %v —— 卡在更新", ix.Status())
 }

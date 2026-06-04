@@ -66,6 +66,7 @@ type stateFile struct {
 	LastUsage   *usageSnapshot `json:"last_usage,omitempty"`   // 上轮 API 调用 token 用量,启动时回填 Usage section
 	PrefixSig   string         `json:"prefix_sig,omitempty"`   // hash(系统提示词+工具+mcp),重启检测前缀变化
 	PrefixModel string         `json:"prefix_model,omitempty"` // 上次实际发送用的 model ID(缓存按模型分,压缩需同模型才命中)
+	WorkingMode string         `json:"working_mode,omitempty"` // 工作模式 kp/openspec/sp(按会话保存,切会话时同步)。空 = 默认 kp
 
 	// Summary 已迁出到独立裸文件;此字段仅用于读取旧版本遗留的 state.json(向后兼容)。
 	Summary string `json:"summary,omitempty"`
@@ -233,6 +234,32 @@ func (m *Manager) LoadUsage() *Usage {
 		return nil
 	}
 	return s.LastUsage
+}
+
+// SaveWorkingMode 写入工作模式到 state.json(按会话持久化)。失败静默。
+func (m *Manager) SaveWorkingMode(mode string) {
+	path := filepath.Join(m.convDir, "state.json")
+	var s stateFile
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &s)
+	}
+	s.WorkingMode = mode
+	data, _ := json.MarshalIndent(s, "", "  ")
+	_ = os.WriteFile(path, data, 0o644)
+}
+
+// LoadWorkingMode 读工作模式;缺失返回空串(调用方归一为默认 kp)。
+func (m *Manager) LoadWorkingMode() string {
+	path := filepath.Join(m.convDir, "state.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var s stateFile
+	if err := json.Unmarshal(data, &s); err != nil {
+		return ""
+	}
+	return s.WorkingMode
 }
 
 // LoadSummary 读取压缩摘要:优先裸文件,为空时回退到旧版本遗留在 state.json 的 summary 字段。

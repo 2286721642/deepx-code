@@ -159,7 +159,14 @@ type Index struct {
 	cachedPrecise  []Edge // 上次算出的精确 Go 调用边(按 cachedSig 缓存)
 	cachedSig      string
 	preciseRunning bool // 后台精确解析是否在跑(避免并发重复)
+
+	rebuildMu    sync.Mutex  // 保护 rebuildTimer
+	rebuildTimer *time.Timer // Invalidate 后的防抖重建定时器(连续编辑只在静默后重建一次)
 }
+
+// rebuildDebounce 是文件变动后到后台重建之间的静默窗口:一次工具循环里连续改多个文件时,
+// 每次 Invalidate 都重置它,只在最后一次编辑静默后才真正重建一次,避免重建风暴。
+const rebuildDebounce = 600 * time.Millisecond
 
 // Status 返回当前索引状态(无锁,供 TUI 每帧读取)。
 func (ix *Index) Status() Status { return Status(ix.st.Load()) }
@@ -276,15 +283,55 @@ func (ix *Index) Reindex() (int, error) {
 	return n, nil
 }
 
-// Invalidate 标记缓存失效,下次 Graph() 时重建。供文件被编辑后调用(增量刷新的简化版)。
-// 只有"已就绪"的图谱被改动才降级成"待更新";从没构建过(idle)的维持 idle —— 否则
-// 模型还没用过图谱、只是改了个文件,状态就会错误地跳成"更新"。
+// Invalidate 标记缓存失效并安排后台重建。供文件被编辑后调用(增量刷新的简化版)。
+// 只有"已构建过"(就绪/降级)的图谱被改动才降级成"待更新"并排队重建;从没构建过(idle)的
+// 维持 idle —— 否则模型还没用过图谱、只是改了个文件,状态就会错误地跳成"更新"。
+//
+// 重建走防抖后台任务:不再等下次 Graph() 查询(那次查询可能永远不来,状态就会一直卡在"更新")。
 func (ix *Index) Invalidate() {
 	ix.mu.Lock()
 	ix.g = nil
 	ix.gPrecise = false
 	ix.mu.Unlock()
-	ix.st.CompareAndSwap(int32(StatusReady), int32(StatusStale))
+
+	switch Status(ix.st.Load()) {
+	case StatusReady, StatusDegraded:
+		ix.setStatus(StatusStale)
+		ix.scheduleRebuild()
+	}
+}
+
+// scheduleRebuild 在静默窗口后于后台重建快图,把状态从"更新"刷回"就绪"。
+// 连续编辑会不断重置定时器,因此只在最后一次编辑静默 rebuildDebounce 后重建一次。
+func (ix *Index) scheduleRebuild() {
+	if ix.forbidden {
+		return
+	}
+	ix.rebuildMu.Lock()
+	defer ix.rebuildMu.Unlock()
+	if ix.rebuildTimer != nil {
+		ix.rebuildTimer.Stop()
+	}
+	ix.rebuildTimer = time.AfterFunc(rebuildDebounce, func() {
+		ix.mu.Lock()
+		if ix.g != nil { // 期间已有查询重建过,直接置就绪即可
+			ix.mu.Unlock()
+			ix.setStatus(StatusReady)
+			return
+		}
+		g, degraded, err := ix.assemble(nil, false)
+		if err != nil {
+			ix.mu.Unlock()
+			return // 建失败:保持"更新",留待下次编辑或查询再试
+		}
+		ix.g = g
+		ix.gPrecise = false
+		ix.mu.Unlock()
+		ix.setStatusBuilt(degraded)
+		if !degraded {
+			ix.maybePrecise()
+		}
+	})
 }
 
 // maybePrecise 在后台把当前快图升级成精确图(若有 Go 代码且尚未精确)。

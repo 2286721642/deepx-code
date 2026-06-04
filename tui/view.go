@@ -348,8 +348,14 @@ func (m model) View() tea.View {
 	if m.showLangModal {
 		mainUI = overlayCentered(mainUI, m.langModalBlock(), m.width, m.height)
 	}
+	if m.showWorkingModeModal {
+		mainUI = overlayCentered(mainUI, m.workingModeModalBlock(), m.width, m.height)
+	}
 	if m.showModelModal {
 		mainUI = overlayCentered(mainUI, m.modelModalBlock(), m.width, m.height)
+	}
+	if m.showSandboxModal {
+		mainUI = overlayCentered(mainUI, m.sandboxModalBlock(), m.width, m.height)
 	}
 	if m.showReasoningModal {
 		mainUI = overlayCentered(mainUI, m.reasoningModalBlock(), m.width, m.height)
@@ -376,7 +382,7 @@ func (m model) View() tea.View {
 	// modal 打开时不显示真实光标 —— 避免光标卡在 modal 背后。
 	// cursorBlinkOff 由 cursorBlinkTickMsg 600ms 切一次:亮时塞 Cursor,灭时不塞 —
 	// 不依赖终端的 DECSCUSR blink 支持,VS Code 终端等也能闪。
-	if !m.showSetup && !m.showLangModal && !m.showMcpAdd && !m.showMcpDelete && !m.showSkillAdd && !m.showSkillDelete && !m.showSessionList && !m.reviewPending && !m.cursorBlinkOff {
+	if !m.showSetup && !m.showLangModal && !m.showWorkingModeModal && !m.showSandboxModal && !m.showMcpAdd && !m.showMcpDelete && !m.showSkillAdd && !m.showSkillDelete && !m.showSessionList && !m.reviewPending && !m.cursorBlinkOff {
 		if c := m.input.Cursor(); c != nil {
 			c.Position.X += inputGutterWidth
 			c.Position.Y += bodyH + queuedH + inputTopPad
@@ -619,6 +625,76 @@ func (m model) langModalBlock() string {
 		Render(content)
 }
 
+// workingModeModalBlock 渲染 /working-mode 选择弹窗。三项 karpathy/openspec/superpowers,
+// workingModeModalIdx 是当前光标。
+func (m model) workingModeModalBlock() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render(T("workingmode.title"))
+
+	options := []string{
+		T("workingmode.opt.karpathy"),
+		T("workingmode.opt.openspec"),
+		T("workingmode.opt.superpowers"),
+	}
+	rows := make([]string, 0, len(options))
+	for i, opt := range options {
+		marker := "  "
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		if i == m.workingModeModalIdx {
+			marker = "▸ "
+			style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("236"))
+		}
+		rows = append(rows, style.Render(marker+opt))
+	}
+
+	footer := lipgloss.NewStyle().Foreground(subtleColor).Render(T("lang.footer"))
+	parts := []string{title, ""}
+	parts = append(parts, rows...)
+	parts = append(parts, "", footer)
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(highlightColor).
+		Padding(1, 2).
+		Width(42).
+		Render(content)
+}
+
+// sandboxModalBlock 渲染 /sandbox 选择弹窗。三项 native/off/docker(见 sandboxModeOrder),
+// sandboxModalIdx 是当前光标。
+func (m model) sandboxModalBlock() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render(T("sandbox.title"))
+
+	options := []string{
+		T("sandbox.opt.native"),
+		T("sandbox.opt.off"),
+		T("sandbox.opt.docker"),
+	}
+	rows := make([]string, 0, len(options))
+	for i, opt := range options {
+		marker := "  "
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		if i == m.sandboxModalIdx {
+			marker = "▸ "
+			style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("236"))
+		}
+		rows = append(rows, style.Render(marker+opt))
+	}
+
+	footer := lipgloss.NewStyle().Foreground(subtleColor).Render(T("lang.footer"))
+	parts := []string{title, ""}
+	parts = append(parts, rows...)
+	parts = append(parts, "", footer)
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(highlightColor).
+		Padding(1, 2).
+		Width(42).
+		Render(content)
+}
+
 // modelModalBlock 渲染 /model 选择弹窗。三项:auto / flash / pro,modelModalIdx 是当前光标。
 func (m model) modelModalBlock() string {
 	title := lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render(T("model.modal.title"))
@@ -663,36 +739,13 @@ func (m model) rightPanelView() string {
 	label := lipgloss.NewStyle().Foreground(dimColor).Render
 	subtle := lipgloss.NewStyle().Foreground(subtleColor).Render
 
-	// 模型 id 太长就截断,避免把右栏挤变形
-	flashID := truncate(m.models.Flash.Model, rightPanelWidth-8)
-	proID := truncate(m.models.Pro.Model, rightPanelWidth-8)
-
 	// 路径压缩 ~/.../tail
 	cwd := abbreviatePath(m.workspace, rightPanelWidth-2)
 
-	// 本轮 elapsed:streaming 时实时算,idle 时用 stream done 时冻结的 turnElapsed
-	var elapsed time.Duration
-	if m.streaming && !m.turnStartedAt.IsZero() {
-		elapsed = time.Since(m.turnStartedAt)
-	} else {
-		elapsed = m.turnElapsed
-	}
 
-	// 活跃模型用 ▶ 标记。占位用两空格保持对齐。
-	arrowStyle := lipgloss.NewStyle().Foreground(highlightColor).Render("▶ ")
-	flashIndicator := "  "
-	proIndicator := "  "
-	switch m.activeModelRole {
-	case "flash":
-		flashIndicator = arrowStyle
-	case "pro":
-		proIndicator = arrowStyle
-	}
-
-	statusLine := label(T("panel.label.status")) + " " +
-		lipgloss.NewStyle().Foreground(statusColor(m.status)).Render(T("status."+m.status))
-	modeLine := label(T("panel.label.mode")) + " " +
-		lipgloss.NewStyle().Foreground(highlightColor).Render(string(m.mode))
+	// 权限模式(plan/auto/review)单独成段。任务执行状态(idle/streaming)已在输入框上方的
+	// statusFooterLine 实时显示,右栏不再重复。
+	modeStr := lipgloss.NewStyle().Foreground(highlightColor).Render(string(m.mode))
 
 	// section 渲染助手:标题 + 缩进内容 + 末尾空行。
 	section := func(title string, body []string) []string {
@@ -708,6 +761,13 @@ func (m model) rightPanelView() string {
 		return out
 	}
 
+	// inlineRow:标签和值放在同一行(◆ 标题  值),用于权限模式 / 计划 / 步骤这类单值项,不换行。
+	inlineRow := func(title, value string) string {
+		return lipgloss.NewStyle().Foreground(highlightColor).Render("◆ ") +
+			lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(strings.ToUpper(title)) +
+			"  " + value
+	}
+
 	rows := []string{}
 	// 5 行文字 logo:上 `/` 修饰条 + 3 行 deepx ascii art + 下 `/` 修饰条。
 	// 右栏宽 rightPanelWidth,Padding(0,1) 后内宽 rightPanelWidth-2,banner 渲到这个宽度。
@@ -719,7 +779,15 @@ func (m model) rightPanelView() string {
 	// 版本行紧贴 banner 下:`v0.1.0` 或 `v0.1.0 ↑ 0.2.0`(有新版本时高亮)。
 	rows = append(rows, m.versionLine(bannerInnerW), "")
 
-	// Endpoint section:api host(去 scheme / path)
+	// Workspace section:标题尾接 session 哈希。不走 section() 是为了让哈希用 subtle 暗色。
+	workspaceTitle := lipgloss.NewStyle().Foreground(highlightColor).Render("◆ ") +
+		lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(strings.ToUpper(T("panel.workspace")))
+	if m.session != nil {
+		workspaceTitle += " " + subtle("("+m.session.SessionID()[:8]+")")
+	}
+	rows = append(rows, workspaceTitle, "  "+subtle(cwd), "")
+
+	// 模型厂商 section:api host(去 scheme / path),host 即可标识厂商。
 	endpoint := m.models.Flash.BaseURL
 	if endpoint == "" {
 		endpoint = m.models.Pro.BaseURL
@@ -734,54 +802,61 @@ func (m model) rightPanelView() string {
 	if idx := strings.IndexAny(host, "/?"); idx >= 0 {
 		host = host[:idx]
 	}
-	rows = append(rows, section(T("panel.endpoint"), []string{subtle(host)})...)
+	rows = append(rows, section(T("panel.vendor"), []string{subtle(host)})...)
 
 	// 注:web dashboard 地址不在右栏显示 —— 启动时已在 chat 区给出可点击 / 已复制的提示,
 	// 这里再放一份既重复又因面板窄被迫折行,反而没法点。
 
-	// Workspace section:标题尾接 session 哈希。不走 section() 是为了让哈希用 subtle 暗色。
-	workspaceTitle := lipgloss.NewStyle().Foreground(highlightColor).Render("◆ ") +
-		lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(strings.ToUpper(T("panel.workspace")))
-	if m.session != nil {
-		workspaceTitle += " " + subtle("("+m.session.SessionID()[:8]+")")
+	// 模型路由:只显示 auto / flash / pro。
+	routing := m.modelPin
+	if routing == "" {
+		routing = "auto"
 	}
-	rows = append(rows, workspaceTitle, "  "+subtle(cwd), "")
-
-	// 标题后标明当前选择模式:auto(按任务路由) / flash / pro(锁定)。
-	rows = append(rows, section(T("panel.models")+" ("+m.modelPin+")", []string{
-		flashIndicator + label(T("panel.label.flash")) + " " + flashID,
-		proIndicator + label(T("panel.label.pro")) + " " + proID,
+	rows = append(rows, inlineRow(T("panel.routing"), lipgloss.NewStyle().Foreground(highlightColor).Render(routing)), "")
+	// 当前模型:只显示模型名(去掉 org/ 前缀,截断防溢出)。
+	curModel := m.activeModelID
+	if i := strings.LastIndexByte(curModel, '/'); i >= 0 {
+		curModel = curModel[i+1:]
+	}
+	if curModel == "" {
+		curModel = "—"
+	}
+	rows = append(rows, section(T("panel.curmodel"), []string{
+		truncate(curModel, rightPanelWidth-4),
 	})...)
 	// 用量紧跟模型。首轮 API 调用结束才能拿到 lastUsage,没拿到前用 "—" 占位,保持布局一致。
-	// 分母用 PromptTokens 而非 hit+miss:DeepSeek API 保证 prompt_tokens = hit + miss,
-	// 但 hit/miss 是 DeepSeek 私有字段,兼容 OpenAI 的模型可能不返回,用 PromptTokens 更稳。
-	promptStr, outputStr, cacheStr := "—", "—", "—"
+	// 上下文占用:本轮发出的 prompt tokens / 当前模型窗口。窗口从当前模型配置动态取(非硬编码);
+	// 未配置(=0)则只显示已用 token,不编造分母/百分比。
+	ctxWin := m.models.Flash.ContextWindow
+	if m.activeModelRole == "pro" {
+		ctxWin = m.models.Pro.ContextWindow
+	}
+	usedStr, outputStr, cacheStr := "—", "—", "—"
 	if u := m.lastUsage; u != nil {
-		promptStr = formatTokenCount(u.PromptTokens) + " tok"
+		if ctxWin > 0 && u.PromptTokens > 0 {
+			usedStr = formatTokenCount(u.PromptTokens) + " / " + formatTokenCount(ctxWin) +
+				" · " + strconv.Itoa(u.PromptTokens*100/ctxWin) + "%"
+		} else {
+			usedStr = formatTokenCount(u.PromptTokens) + " tok"
+		}
 		outputStr = formatTokenCount(u.CompletionTokens) + " tok"
+		// 命中率:分母用 PromptTokens(DeepSeek 保证 = hit + miss;hit/miss 是其私有字段)。
 		if u.PromptTokens > 0 {
 			cacheStr = strconv.Itoa(u.PromptCacheHitTokens*100/u.PromptTokens) + "% hit"
 		} else {
 			cacheStr = "0% hit"
 		}
 	}
-	rows = append(rows, section(T("panel.usage"), []string{
-		label(T("panel.label.prompt")) + " " + promptStr,
-		label(T("panel.label.output")) + " " + outputStr,
+	rows = append(rows, section(T("panel.context"), []string{
+		label(T("panel.label.used")) + " " + usedStr,
 		label(T("panel.label.cache")) + " " + cacheStr,
-		label(T("panel.label.time")) + " " + formatElapsed(elapsed),
+		label(T("panel.label.output")) + " " + outputStr,
 	})...)
-	rows = append(rows, section(T("panel.status"), []string{
-		statusLine,
-		modeLine,
-	})...)
-	// 代码图谱:独立区块,显示状态 + 累计调用次数。
+	rows = append(rows, inlineRow(T("panel.permmode"), modeStr), "")
+	// 代码图谱:单行只显示状态。
 	cgState := tools.CodeGraphStatus()
-	rows = append(rows, section(T("panel.codegraph"), []string{
-		label(T("panel.label.cgstate")) + " " +
-			lipgloss.NewStyle().Foreground(codegraphColor(cgState)).Render(T("codegraph."+cgState)),
-		label(T("panel.label.cgcalls")) + " " + strconv.Itoa(tools.CodeGraphCalls()),
-	})...)
+	rows = append(rows, inlineRow(T("panel.codegraph"),
+		lipgloss.NewStyle().Foreground(codegraphColor(cgState)).Render(T("codegraph."+cgState))), "")
 	// 沙箱:显示当前模式 + native 的保护级别(OS 隔离 / 软策略),让用户清楚当前的边界强度。
 	sbDesc := string(tools.CurrentSandboxMode())
 	switch tools.CurrentSandboxMode() {
@@ -797,15 +872,26 @@ func (m model) rightPanelView() string {
 	rows = append(rows, section(T("panel.sandbox"), []string{
 		label(T("panel.label.sbmode")) + " " + sbDesc,
 	})...)
-	// 规划进度:始终显示(无规划时 0/0)。完整 plan 树在 chat 区展示,右栏只放摘要。
-	rows = append(rows, section(T("panel.plan"), renderPlanSummary(m.plan, rightPanelWidth-4))...)
-	rows = append(rows, section(T("panel.commands"), []string{
-		label("/plan   ") + "Write/Bash off",
-		label("/auto   ") + "Write/Bash on",
-		label("/review ") + "Write/Bash ask",
-		label("/lang   ") + "zh / en",
-		label("/help   ") + "all cmds",
+	// 工作模式:kp / openspec / sp。
+	rows = append(rows, section(T("panel.workmode"), []string{
+		label(T("panel.label.wmode")) + " " + string(m.workingMode),
 	})...)
+	// 规划进度:始终显示(无规划时 0/0)。完整 plan 树在 chat 区展示,右栏只放摘要。
+	// 计划(Plan)= Todo 工具(顺序清单);步骤(Step)= CreatePlan(并发 DAG)。
+	// 二者共用 m.plan(同一时刻只一种活跃),按 planKind 分到两段显示,另一段为 0/0。
+	var todoState, stepState *planState
+	switch m.planKind {
+	case "todo":
+		todoState = m.plan
+	case "createplan":
+		stepState = m.plan
+	}
+	rows = append(rows,
+		inlineRow(T("panel.plan"), renderPlanSummary(todoState, 0)[0]),
+		"",
+		inlineRow(T("panel.step"), renderPlanSummary(stepState, 0)[0]),
+		"")
+	rows = append(rows, inlineRow(T("panel.help"), lipgloss.NewStyle().Foreground(highlightColor).Render("/help")))
 
 	// 删掉最后那行多余空行
 	if len(rows) > 0 && rows[len(rows)-1] == "" {

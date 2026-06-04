@@ -149,9 +149,33 @@ var translations = map[string]map[Lang]string{
 		LangZH: "沙箱模式:off(关闭)/ native(OS 隔离,默认)/ docker(容器隔离)",
 		LangEN: "Sandbox mode: off / native (OS isolation, default) / docker (container isolation)",
 	},
-	"sandbox.current": {
-		LangZH: "当前沙箱:%s",
-		LangEN: "Current sandbox: %s",
+	"cmd.workingmode.desc": {
+		LangZH: "工作模式:kp(务实)/ openspec(规格驱动)/ sp(全流程严谨)",
+		LangEN: "Working mode: kp (pragmatic) / openspec (spec-driven) / sp (rigorous)",
+	},
+	"workingmode.switched": {
+		LangZH: "🧭 已切到工作模式:%s。此后每轮对话都会引导用对应 skill、并排除另外两个。",
+		LangEN: "🧭 Switched to working mode: %s. Each turn now steers toward its skill and excludes the other two.",
+	},
+	"workingmode.unknown": {
+		LangZH: "未知工作模式:%s(可选 kp/karpathy、openspec/spec、sp/superpowers)",
+		LangEN: "Unknown working mode: %s (choose kp/karpathy, openspec/spec, sp/superpowers)",
+	},
+	"sandbox.title": {
+		LangZH: "选择沙箱模式",
+		LangEN: "Choose Sandbox Mode",
+	},
+	"sandbox.opt.native": {
+		LangZH: "native — OS 隔离(推荐)",
+		LangEN: "native — OS isolation (recommended)",
+	},
+	"sandbox.opt.off": {
+		LangZH: "off    — 无防护",
+		LangEN: "off    — no protection",
+	},
+	"sandbox.opt.docker": {
+		LangZH: "docker — 容器隔离",
+		LangEN: "docker — container isolation",
 	},
 	"sandbox.switched_off": {
 		LangZH: "⚠️ 已关闭沙箱(off):命令不做任何隔离,Write/Edit 也不再限制 workspace。仅在你完全信任时用。",
@@ -244,13 +268,13 @@ var translations = map[string]map[Lang]string{
 			"- `/sessions` — 历史对话列表(↑/↓ 选,Enter 切换)\n" +
 			"- `/status` — 显示/隐藏右侧状态栏(也可按 Ctrl+B)\n" +
 			"- `/sandbox` — 沙箱模式:`off`(关闭)/ `native`(OS 隔离,默认)/ `docker`(容器隔离)\n" +
+			"- `/working-mode` — 工作模式:`karpathy`(务实)/ `openspec`(规格驱动)/ `superpowers`(全流程严谨),默认 karpathy\n" +
 			"- `/undo` — 撤销上一轮对话(原输入回填输入框)\n" +
 			"- `/help` — 帮助\n\n" +
 			"**输入**\n\n" +
 			"- `@` — 引用文件(弹出文件选择器,选中后插入路径,模型按需读取)\n\n" +
 			"**快捷键**\n\n" +
 			"- `Enter` — 发送;模型回答中按 Enter 则把输入排队,本轮结束自动发出\n" +
-			"- `Ctrl+Shift+A` / macOS `Cmd+Shift+A` — 输入框全选\n" +
 			"- `Ctrl+B` — 显示/隐藏右侧状态栏\n" +
 			"- `Ctrl+V` — 粘贴(含图片)\n" +
 			"- `Esc` — 中断当前对话\n" +
@@ -271,13 +295,13 @@ var translations = map[string]map[Lang]string{
 			"- `/sessions` — Conversation history (↑/↓ select, Enter switch)\n" +
 			"- `/status` — Show/hide the right status panel (or press Ctrl+B)\n" +
 			"- `/sandbox` — Sandbox mode: `off` / `native` (OS isolation, default) / `docker` (container isolation)\n" +
+			"- `/working-mode` — Working mode: `karpathy` (pragmatic) / `openspec` (spec-driven) / `superpowers` (rigorous), default karpathy\n" +
 			"- `/undo` — Undo the last exchange (restores your input)\n" +
 			"- `/help` — Help\n\n" +
 			"**Input**\n\n" +
 			"- `@` — Reference a file (opens a picker; inserts the path for the model to read)\n\n" +
 			"**Keybindings**\n\n" +
 			"- `Enter` — Send; while the model is responding, Enter queues your input and it's sent when the turn ends\n" +
-			"- `Ctrl+Shift+A` / macOS `Cmd+Shift+A` — Select all in input\n" +
 			"- `Ctrl+B` — Show/hide the right status panel\n" +
 			"- `Ctrl+V` — Paste (including images)\n" +
 			"- `Esc` — Interrupt current turn\n" +
@@ -351,28 +375,25 @@ var translations = map[string]map[Lang]string{
 
 	// === Right panel section titles ===
 	// 注:section() 会 strings.ToUpper(title) — 对英文是大写化,对中文是 no-op,两边都能用。
-	"panel.endpoint":  {LangZH: "端点", LangEN: "Endpoint"},
+	"panel.vendor":    {LangZH: "模型厂商", LangEN: "Vendor"},
 	"panel.workspace": {LangZH: "工作区", LangEN: "Workspace"},
-	"panel.models":    {LangZH: "模型", LangEN: "Models"},
-	"panel.status":    {LangZH: "状态", LangEN: "Status"},
-	"panel.usage":     {LangZH: "用量", LangEN: "Usage"},
-	"panel.commands":  {LangZH: "命令", LangEN: "Commands"},
+	"panel.routing":   {LangZH: "模型路由", LangEN: "Routing"},
+	"panel.curmodel":  {LangZH: "当前模型", LangEN: "Model"},
+	"panel.permmode":  {LangZH: "权限模式", LangEN: "Permission"},
+	"panel.context":   {LangZH: "上下文", LangEN: "Context"},
+	"panel.help":      {LangZH: "帮助", LangEN: "Help"},
 	"panel.codegraph": {LangZH: "代码图谱", LangEN: "CodeGraph"},
 	"panel.sandbox":   {LangZH: "🛡️ 沙箱", LangEN: "🛡️ Sandbox"},
+	"panel.workmode":  {LangZH: "🧭 工作模式", LangEN: "🧭 Working mode"},
 	"panel.plan":      {LangZH: "计划", LangEN: "Plan"},
+	"panel.step":      {LangZH: "步骤", LangEN: "Step"},
 
 	// === Right panel labels ===
-	"panel.label.flash":   {LangZH: "flash ", LangEN: "flash "},
-	"panel.label.pro":     {LangZH: "pro   ", LangEN: "pro   "},
-	"panel.label.status":  {LangZH: "status", LangEN: "status"},
-	"panel.label.mode":    {LangZH: "mode  ", LangEN: "mode  "},
-	"panel.label.prompt":  {LangZH: "prompt", LangEN: "prompt"},
-	"panel.label.output":  {LangZH: "output", LangEN: "output"},
-	"panel.label.cache":   {LangZH: "cache ", LangEN: "cache "},
-	"panel.label.time":    {LangZH: "duration", LangEN: "duration"},
-	"panel.label.cgstate": {LangZH: "状态", LangEN: "status"},
-	"panel.label.sbmode":  {LangZH: "模式", LangEN: "mode"},
-	"panel.label.cgcalls": {LangZH: "调用次数", LangEN: "calls "},
+	"panel.label.used":    {LangZH: "占用", LangEN: "Used"},
+	"panel.label.output":  {LangZH: "输出", LangEN: "Output"},
+	"panel.label.cache":  {LangZH: "缓存", LangEN: "Cache"},
+	"panel.label.sbmode": {LangZH: "隔离", LangEN: "Isolation"},
+	"panel.label.wmode":  {LangZH: "方法", LangEN: "Method"},
 
 	// === Status values ===
 	"status.idle":      {LangZH: "idle", LangEN: "idle"},
@@ -479,6 +500,22 @@ var translations = map[string]map[Lang]string{
 		LangZH: "↑/↓ 选择 · Enter 确认 · Esc 取消",
 		LangEN: "↑/↓ select · Enter confirm · Esc cancel",
 	},
+	"workingmode.title": {
+		LangZH: "🧭 选择工作模式",
+		LangEN: "🧭 Choose Working Mode",
+	},
+	"workingmode.opt.karpathy": {
+		LangZH: "karpathy    — 务实快速",
+		LangEN: "karpathy    — pragmatic",
+	},
+	"workingmode.opt.openspec": {
+		LangZH: "openspec    — 规格驱动",
+		LangEN: "openspec    — spec-driven",
+	},
+	"workingmode.opt.superpowers": {
+		LangZH: "superpowers — 全流程严谨",
+		LangEN: "superpowers — rigorous",
+	},
 	"lang.switched": {
 		LangZH: "✓ 已切换语言: %s",
 		LangEN: "✓ Language switched: %s",
@@ -530,5 +567,9 @@ var translations = map[string]map[Lang]string{
 	"web.ready": {
 		LangZH: "🌐 **本地 Web 面板已就绪** <%s>",
 		LangEN: "🌐 **Local web dashboard ready** <%s>",
+	},
+	"welcome": {
+		LangZH: "👋 欢迎试用 **deepx-code**,输入 `/help` 查看命令与快捷键。",
+		LangEN: "👋 Welcome to **deepx-code** — type `/help` for commands and shortcuts.",
 	},
 }

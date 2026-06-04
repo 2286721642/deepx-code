@@ -72,8 +72,9 @@ type model struct {
 	// 取值缺省 false → 发图走 OCR;true → 发图渲染成 base64 内联,不走 OCR。
 	visionByModel map[string]bool
 
-	mode    agent.AgentMode
-	history []agent.ChatMessage
+	mode        agent.AgentMode
+	workingMode agent.WorkingMode // 工作模式 kp/openspec/sp(默认 kp);每轮注入对应 skill 引导;按 session 保存/恢复
+	history     []agent.ChatMessage
 
 	streamCh <-chan tea.Msg
 
@@ -96,7 +97,8 @@ type model struct {
 
 	// 当前活跃规划。nil = 无规划。pro 调用 CreatePlan 时初始化,
 	// UpdatePlanStatus 通过 TaskStatusMsg 增量更新。每次新用户消息发起前清空。
-	plan *planState
+	plan     *planState
+	planKind string // 当前 plan 来源:"todo"(Todo)/ "createplan"(CreatePlan),右栏分段显示用
 
 	// 鼠标 chat 矩形选区。selecting=true 表示左键在 chat 区按下后还没松开;
 	// selAnchor / selEnd 是选区两端 (cellPos: 显示列 + wrapped 行号)。
@@ -105,10 +107,9 @@ type model struct {
 	selAnchor cellPos
 	selEnd    cellPos
 
-	// 输入框全选态(Ctrl+A 触发)。true 时输入框 value 整段反色显示,
+	// 输入框全选态(鼠标拖拽全选触发)。true 时输入框 value 整段反色显示,
 	// 下一次按键消费"全选"语义:输入字符 / 删除键 → 清空 value 后再 process;
-	// Esc / 方向键 → 仅取消选择,不动 value;
-	// Ctrl+A → 维持。
+	// Esc / 方向键 → 仅取消选择,不动 value。
 	inputAllSelected bool
 
 	// app 侧光标 blink 状态。textarea 现在用真实终端光标(SetVirtualCursor(false)),
@@ -201,10 +202,18 @@ type model struct {
 	showLangModal bool
 	langModalIdx  int
 
+	// /working-mode 选择 modal 状态。workingModeModalIdx ∈ {0:karpathy, 1:openspec, 2:superpowers}。
+	showWorkingModeModal bool
+	workingModeModalIdx  int
+
 	// /model 选择 modal 状态。showModelModal=true 时路由按键到 modal,
 	// modelModalIdx ∈ {0:auto, 1:flash, 2:pro}。
 	showModelModal bool
 	modelModalIdx  int
+
+	// /sandbox 选择 modal 状态。sandboxModalIdx ∈ {0:native, 1:off, 2:docker}(见 sandboxModeOrder)。
+	showSandboxModal bool
+	sandboxModalIdx  int
 
 	// MCP:mcpMgr 管理外部 MCP server 连接与工具注入(启动时后台连接配置里的 server)。
 	// /mcp-add 弹单行输入框(格式 "名称 命令 [参数...]");/mcp-delete 弹 server 列表选删。
@@ -432,6 +441,7 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 		modelPin:        "auto",
 		version:         version,
 		mode:            agent.AgentMode_Auto,
+		workingMode:     agent.WorkingModeDefault, // 默认 kp;下方从 session 恢复
 		status:          "idle",
 		hideStatusPanel: metaGet().HideStatus, // 记忆上次的状态栏显隐
 		spinner:         sp,
@@ -442,6 +452,11 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 		skillCatalog:    skillCatalog,
 		hub:             hub,
 		webURL:          webURL,
+	}
+
+	// 恢复本会话的工作模式(空 = 默认 kp)。
+	if sess != nil {
+		m.workingMode = agent.NormalizeWorkingMode(sess.LoadWorkingMode())
 	}
 
 	// 回填上轮 token 用量,Usage section 启动后立刻显示真实数字而非 "—"。
@@ -556,11 +571,13 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 		m.input.Focus()
 	}
 
-	// web dashboard 启用时,在 chat 区给一条提示(含完整 URL)。不再自动复制到剪贴板 ——
-	// 现在 chat 区可直接选中复制,终端支持的话也能点链接跳转,自动占用剪贴板反而打扰。
-	if webURL != "" {
-		m.appendChat("System", fmt.Sprintf(T("web.ready"), webURL))
-	}
+	// 每次启动的欢迎语。
+	m.appendChat("System", T("welcome"))
+
+	// 暂时不在 chat 区显示 web 面板地址(地址仍可在右栏看到)。
+	// if webURL != "" {
+	// 	m.appendChat("System", fmt.Sprintf(T("web.ready"), webURL))
+	// }
 
 	// 剪贴板工具检测:Linux 上没装 wl-clipboard / xclip / xsel 时 Ctrl+V 文本粘贴会静默
 	// 失败(atotto/clipboard 找不到二进制就返错,bubbles textarea 啥也不做),用户调一天
@@ -675,6 +692,7 @@ func (m model) submitUserInput(input string) (model, tea.Cmd) {
 	}
 	// 上一轮的 plan 清空
 	m.plan = nil
+	m.planKind = ""
 
 	workspace, _ := os.Getwd()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -692,6 +710,7 @@ func (m model) submitUserInput(input string) (model, tea.Cmd) {
 		m.skillCatalog,
 		m.summary,
 		m.modelPin,
+		m.workingMode,
 	)
 	m.streamCh = ch
 	cmds = append(cmds, cmd)
@@ -756,7 +775,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseWheelMsg:
 		// modal 期间忽略
-		if m.showSetup || m.showLangModal || m.showModelModal || m.showReasoningModal || m.showSessionList {
+		if m.showSetup || m.showLangModal || m.showWorkingModeModal || m.showModelModal || m.showSandboxModal || m.showReasoningModal || m.showSessionList {
 			return m, nil
 		}
 		// 滚轮: 转给 viewport,顺便取消选区
@@ -768,7 +787,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, c
 
 	case tea.MouseClickMsg:
-		if m.showSetup || m.showLangModal || m.showModelModal || m.showReasoningModal || m.showSessionList {
+		if m.showSetup || m.showLangModal || m.showWorkingModeModal || m.showModelModal || m.showSandboxModal || m.showReasoningModal || m.showSessionList {
 			return m, nil
 		}
 		if msg.Button != tea.MouseLeft {
@@ -793,8 +812,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		inInput := msg.Y >= vpH && msg.Y < m.height && msg.X >= 0 && msg.X < m.width
 
 		if inInput {
-			// 单击进入输入区:清 chat 选区 + 记下拖拽起点(双击全选已移除;全选只走 Ctrl+Shift+A
-			// 或真拖动)。后续 MouseMotion 要移动超过阈值才判定为拖拽全选,避免双击抖动误触。
+			// 单击进入输入区:清 chat 选区 + 记下拖拽起点(双击全选已移除;全选只走真拖动)。
+			// 后续 MouseMotion 要移动超过阈值才判定为拖拽全选,避免双击抖动误触。
 			m.inputDragging = true
 			m.inputDragStartX, m.inputDragStartY = msg.X, msg.Y
 			if m.selecting {
@@ -818,7 +837,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMotionMsg:
-		if m.showSetup || m.showLangModal || m.showModelModal || m.showReasoningModal || m.showSessionList {
+		if m.showSetup || m.showLangModal || m.showWorkingModeModal || m.showModelModal || m.showSandboxModal || m.showReasoningModal || m.showSessionList {
 			return m, nil
 		}
 		if msg.Button != tea.MouseLeft {
@@ -884,7 +903,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseReleaseMsg:
-		if m.showSetup || m.showLangModal || m.showModelModal || m.showReasoningModal || m.showSessionList {
+		if m.showSetup || m.showLangModal || m.showWorkingModeModal || m.showModelModal || m.showSandboxModal || m.showReasoningModal || m.showSessionList {
 			return m, nil
 		}
 		if msg.Button != tea.MouseLeft {
@@ -1035,6 +1054,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// /working-mode 弹窗:↑/↓ 切行(3 行:karpathy/openspec/superpowers),Enter 应用,Esc 取消。
+		if m.showWorkingModeModal {
+			switch msg.String() {
+			case "up", "k":
+				if m.workingModeModalIdx > 0 {
+					m.workingModeModalIdx--
+				}
+				return m, nil
+			case "down", "j":
+				if m.workingModeModalIdx < len(workingModeOrder)-1 {
+					m.workingModeModalIdx++
+				}
+				return m, nil
+			case "enter":
+				m.showWorkingModeModal = false
+				m.input.Focus()
+				m.applyWorkingMode(workingModeOrder[m.workingModeModalIdx])
+				return m, nil
+			case "esc", "ctrl+c":
+				m.showWorkingModeModal = false
+				m.input.Focus()
+				return m, nil
+			}
+			return m, nil
+		}
+
 		// /reasoning 弹窗:↑/↓ 切行(4 行:flash/pro × thinking/effort),←/→ 在当前行切值并
 		// 立即写盘,Enter / Esc 关闭(无 cancel,改了就入盘了)。
 		if m.showReasoningModal {
@@ -1082,6 +1127,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "esc", "ctrl+c":
 				m.showModelModal = false
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// /sandbox 弹窗:↑/↓ 切行(3 行:native/off/docker),Enter 应用(docker 可能触发异步拉镜像),Esc 取消。
+		if m.showSandboxModal {
+			switch msg.String() {
+			case "up", "k":
+				if m.sandboxModalIdx > 0 {
+					m.sandboxModalIdx--
+				}
+				return m, nil
+			case "down", "j":
+				if m.sandboxModalIdx < len(sandboxModeOrder)-1 {
+					m.sandboxModalIdx++
+				}
+				return m, nil
+			case "enter":
+				m.showSandboxModal = false
+				m.input.Focus()
+				return m, m.applySandboxMode(sandboxModeOrder[m.sandboxModalIdx])
+			case "esc", "ctrl+c":
+				m.showSandboxModal = false
+				m.input.Focus()
 				return m, nil
 			}
 			return m, nil
@@ -1344,12 +1414,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Ctrl+A 全选态预处理:按下 Ctrl+A 后,任何其他按键都要先消费"全选"语义。
+		// 拖拽全选态预处理:整段反色高亮后,任何其他按键都要先消费"全选"语义。
 		// 放在外层 switch 之前,确保所有后续 case 都看不到带 selected 的状态。
 		if m.inputAllSelected {
 			switch msg.String() {
-			case "ctrl+shift+a", "super+shift+a":
-				return m, nil // 已全选,继续全选
 			case "esc":
 				m.inputAllSelected = false
 				return m, nil
@@ -1376,20 +1444,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		switch msg.String() {
-		// 输入框全选。两个 key 都注册:
-		//   - "ctrl+shift+a"  — 跨平台通用,跟 Claude Code 一致 (issue #52912)
-		//   - "super+shift+a" — macOS Cmd+Shift+A,Kitty Keyboard Protocol 透传 (iTerm2 /
-		//     kitty / WezTerm / Ghostty 默认未占用此组合,自然送达;Terminal.app 不支持
-		//     Kitty Protocol,那边用户用 Ctrl+Shift+A 即可)
-		//
-		// 不用 Cmd+A / Ctrl+A 是因为前者被 macOS 终端 GUI 拦截做"全选窗口文本"、
-		// 字节不进 PTY;后者是 readline LineStart 的默认绑定 — Anthropic 的 Claude Code
-		// (issue #14789 not_planned) 也确认 Cmd+A 物理不可达,所有 TUI 都用 Ctrl 组合键。
-		case "ctrl+shift+a", "super+shift+a":
-			if m.input.Value() != "" {
-				m.inputAllSelected = true
-			}
-			return m, nil
 		case "ctrl+c":
 			// Ctrl+C 双击退出保护:防止误触一下就退。
 			//   - streaming 中第一次:先取消(同 Esc 行为)+ 提示再按退出
@@ -1728,6 +1782,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.plan = &planState{items: msg.Plans}
+		m.planKind = msg.Kind
 		// 不写 chatContent — plan 通过 refreshViewport 的 live overlay 实时渲染,
 		// 每次 TaskStatusMsg 自然刷新出新 checkbox。
 		// 流结束时(StreamDoneMsg)再固化一次进 chatContent 留作历史。
@@ -2136,6 +2191,9 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 	if strings.HasPrefix(cmd, "/sandbox") { // 带参数(native/docker [image]),传原文(镜像名别被小写化)
 		return m.handleSandboxCommand(input)
 	}
+	if strings.HasPrefix(cmd, "/working-mode") { // 带参数(kp/openspec/sp)
+		return m.handleWorkingModeCommand(cmd)
+	}
 	switch cmd {
 	case "/plan":
 		m.mode = agent.AgentMode_Plan
@@ -2251,6 +2309,52 @@ func (m *model) activateDockerSandbox(image string) {
 	m.appendChat("assistant", fmt.Sprintf(T("sandbox.switched_docker"), image))
 }
 
+// handleWorkingModeCommand 处理 /working-mode [kp|openspec|sp]:
+// 无参 → 显示当前模式;有参 → 切换、存进当前 session(切会话会同步)、给出提示。
+func (m *model) handleWorkingModeCommand(cmd string) tea.Cmd {
+	fields := strings.Fields(cmd)
+	if len(fields) < 2 {
+		// 无参 → 弹窗选择,光标落在当前模式上。
+		m.showWorkingModeModal = true
+		m.workingModeModalIdx = workingModeIndex(m.workingMode)
+		m.input.Blur()
+		return nil
+	}
+	switch strings.ToLower(fields[1]) {
+	case "kp", "karpathy", "spec", "openspec", "sp", "superpowers":
+		m.applyWorkingMode(agent.NormalizeWorkingMode(fields[1]))
+	default:
+		m.appendChat("assistant", fmt.Sprintf(T("workingmode.unknown"), fields[1]))
+	}
+	return nil
+}
+
+// workingModeOrder 是弹窗里工作模式的展示顺序,与 workingModeModalIdx 对应。
+var workingModeOrder = []agent.WorkingMode{
+	agent.WorkingModeKarpathy,
+	agent.WorkingModeOpenSpec,
+	agent.WorkingModeSuperpowers,
+}
+
+// workingModeIndex 返回某模式在弹窗里的行号,未知则落到默认(0)。
+func workingModeIndex(mode agent.WorkingMode) int {
+	for i, mm := range workingModeOrder {
+		if mm == mode {
+			return i
+		}
+	}
+	return 0
+}
+
+// applyWorkingMode 切换工作模式、写进当前 session,并给一条提示。
+func (m *model) applyWorkingMode(mode agent.WorkingMode) {
+	m.workingMode = mode
+	if m.session != nil {
+		m.session.SaveWorkingMode(string(mode))
+	}
+	m.appendChat("assistant", fmt.Sprintf(T("workingmode.switched"), mode))
+}
+
 // handleSandboxCommand 处理 /sandbox [off|native|docker [image]]:
 // 无参 → 显示当前模式;off → 关闭沙箱;native → OS 隔离/软策略;docker [image] → 探测 Docker 后切容器。
 // input 是原始输入(未小写化),镜像名大小写敏感。
@@ -2264,15 +2368,59 @@ func (m *model) handleSandboxCommand(input string) tea.Cmd {
 	}
 	fields := strings.Fields(rest)
 	if len(fields) == 0 {
-		m.appendChat("assistant", fmt.Sprintf(T("sandbox.current"), tools.CurrentSandboxMode()))
+		// 无参 → 弹窗选择,光标落在当前模式上。
+		m.openSandboxModal()
 		return nil
 	}
 	switch strings.ToLower(fields[0]) {
 	case "off":
+		return m.applySandboxMode(tools.SandboxOff)
+	case "native":
+		return m.applySandboxMode(tools.SandboxNative)
+	case "docker":
+		if len(fields) >= 2 { // /sandbox docker <image>
+			tools.SetSandboxDockerImage(fields[1])
+		}
+		return m.applySandboxMode(tools.SandboxDocker)
+	default:
+		m.appendChat("assistant", fmt.Sprintf(T("sandbox.unknown"), fields[0]))
+	}
+	return nil
+}
+
+// sandboxModeOrder 是弹窗里沙箱模式的展示顺序,与 sandboxModalIdx 对应。
+var sandboxModeOrder = []tools.SandboxMode{
+	tools.SandboxNative,
+	tools.SandboxOff,
+	tools.SandboxDocker,
+}
+
+// sandboxModeIndex 返回某模式在弹窗里的行号,未知则落到默认(0:native)。
+func sandboxModeIndex(mode tools.SandboxMode) int {
+	for i, mm := range sandboxModeOrder {
+		if mm == mode {
+			return i
+		}
+	}
+	return 0
+}
+
+// openSandboxModal 打开沙箱选择弹窗,光标停在当前模式。
+func (m *model) openSandboxModal() {
+	m.sandboxModalIdx = sandboxModeIndex(tools.CurrentSandboxMode())
+	m.showSandboxModal = true
+	m.input.Blur()
+}
+
+// applySandboxMode 切到指定沙箱模式。off/native 即时生效;docker 需探测 + (按需异步拉镜像),
+// 拉取时返回进度动画 cmd。命令行带参和弹窗两条路径共用此函数。
+func (m *model) applySandboxMode(mode tools.SandboxMode) tea.Cmd {
+	switch mode {
+	case tools.SandboxOff:
 		tools.SetSandboxMode(tools.SandboxOff)
 		metaUpdate(func(mm *meta) { mm.Sandbox = string(tools.SandboxOff) })
 		m.appendChat("assistant", T("sandbox.switched_off"))
-	case "native":
+	case tools.SandboxNative:
 		tools.SetSandboxMode(tools.SandboxNative)
 		metaUpdate(func(mm *meta) { mm.Sandbox = string(tools.SandboxNative) })
 		if tools.NativeIsolationActive() {
@@ -2280,10 +2428,7 @@ func (m *model) handleSandboxCommand(input string) tea.Cmd {
 		} else {
 			m.appendChat("assistant", T("sandbox.switched_native_soft"))
 		}
-	case "docker":
-		if len(fields) >= 2 { // /sandbox docker <image>
-			tools.SetSandboxDockerImage(fields[1])
-		}
+	case tools.SandboxDocker:
 		if err := tools.DockerAvailable(); err != nil {
 			m.appendChat("System", fmt.Sprintf(T("sandbox.docker_unavailable"), err))
 			return nil
@@ -2294,7 +2439,7 @@ func (m *model) handleSandboxCommand(input string) tea.Cmd {
 			m.activateDockerSandbox(image)
 			return nil
 		}
-		// 镜像不在本地 → 异步拉取,对话区显示百分比进度条;拉完才正式切到 docker
+		// 镜像不在本地 → 异步拉取,对话区显示拉取动画;拉完才正式切到 docker
 		if m.dockerPulling {
 			return nil // 已在拉,别重复
 		}
@@ -2306,8 +2451,6 @@ func (m *model) handleSandboxCommand(input string) tea.Cmd {
 		m.refreshViewport()
 		// 一边等拉取结果,一边跑省略号动画
 		return tea.Batch(waitDockerPull(tools.PullImage(ctx, image)), dockerPullTickCmd())
-	default:
-		m.appendChat("assistant", fmt.Sprintf(T("sandbox.unknown"), fields[0]))
 	}
 	return nil
 }
