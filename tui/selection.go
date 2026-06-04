@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"os"
 	"strings"
 	"time"
 
@@ -147,25 +146,20 @@ func (m *model) copySelection() tea.Cmd {
 	return tea.Batch(clipboardWriteCmd(text), clearCopyHintCmd())
 }
 
-// clipboardWriteCmd 把 text 写进剪贴板,并返回 Update 里待执行的 tea.Cmd:
-//   - 本地会话:用原生剪贴板(pbcopy/xclip/clip.exe),成功则返回 nil(不发 OSC52);
-//   - 远程(SSH)或原生写入失败:退回 OSC52(tea.SetClipboard)。
+// clipboardWriteCmd 把 text 写进剪贴板,返回 Update 里待执行的 tea.Cmd。
 //
-// 之所以本地不发 OSC52:它的 payload 是 base64 字节,部分终端(如 VS Code 的 xterm.js)
-// 按 Latin-1 解码,中文会变乱码;叠在 pbcopy 之后还会把干净结果覆盖掉。
+// 策略:**先用原生剪贴板工具写并读回校验**(writeClipboardText 内部自动挑可用的),
+// 真写进去了就返回 nil、不再发 OSC52;原生不可用或没写进去(无 DISPLAY、无工具、SSH 无 X-forward 等)
+// 才退回 OSC52(tea.SetClipboard)由终端处理。
+//
+// 不再用"是不是 SSH"去猜:本机 / SSH+X-forward 下原生 xclip 都能用(读回校验会确认),
+// 之前靠 SSH 变量直接走 OSC52 反而被部分终端(GNOME Terminal 等默认不收 OSC52 写)丢弃。
+// 本地不叠 OSC52,也避免它 base64 被某些终端按 Latin-1 解码成乱码、还覆盖掉原生写的干净结果。
 func clipboardWriteCmd(text string) tea.Cmd {
-	if isRemoteSession() {
-		return tea.SetClipboard(text)
+	if err := writeClipboardText(text); err == nil {
+		return nil // 原生已确认写入
 	}
-	if err := writeClipboardText(text); err != nil {
-		return tea.SetClipboard(text)
-	}
-	return nil
-}
-
-// isRemoteSession 判断是否在 SSH 远程会话里(此时本地剪贴板工具写的是远端剪贴板,需靠 OSC52 转发)。
-func isRemoteSession() bool {
-	return os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != ""
+	return tea.SetClipboard(text) // 原生不可用/未生效 → OSC52 兜底
 }
 
 // copyHintClearMsg 到达时清掉"已复制"提示。
