@@ -33,7 +33,8 @@ stages:
             path:
               - ./dist
         caches:
-          - /go/pkg/mod
+          - /go/pkg/mod          # 模块缓存(含下载的 go1.25.8 工具链)
+          - /root/.cache/go-build # Go 编译缓存:下次发版不再从零重编依赖,显著提速
         notify: []
         strategy:
           retry: "0"
