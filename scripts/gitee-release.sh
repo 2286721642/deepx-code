@@ -20,7 +20,12 @@ set -euo pipefail
 GITEE_OWNER="${GITEE_OWNER:-itmisx}"
 GITEE_REPO="${GITEE_REPO:-deepx-code}"
 OUTDIR="${OUTDIR:-dist}"
-export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
+# 必须无条件强制国内代理:Gitee Go 的 go 镜像默认 GOPROXY=proxy.golang.org(被墙),
+# 用 ${GOPROXY:-...} 覆盖不掉它;而 go.mod 的 go 1.25.8 会触发工具链下载,走默认代理就卡死超时。
+# goproxy.cn 全球可达,且镜像 golang.org/toolchain,能顺带把 go1.25.8 工具链拉下来。
+export GOPROXY="https://goproxy.cn,direct"
+export GOTOOLCHAIN="auto"   # 镜像内置 go 若低于 1.25.8,允许经 goproxy.cn 下载对应工具链
+export GOSUMDB="sum.golang.google.cn" # 校验和库国内镜像,避免 sum.golang.org 被墙
 export CGO_ENABLED=0
 
 TAG="${TAG:-$(git describe --tags --exact-match 2>/dev/null || git describe --tags 2>/dev/null || true)}"
