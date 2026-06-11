@@ -19,10 +19,10 @@ var (
 	// accent / highlight 给右栏 section 标题和强调元素。
 	dimColor       = lipgloss.Color("240")
 	subtleColor    = lipgloss.Color("8")
-	accentColor    = lipgloss.Color("12")
-	highlightColor = lipgloss.Color("13")
+	accentColor    = lipgloss.Color("12") // 亮蓝:右栏 section 标题
+	highlightColor = lipgloss.Color("51") // 亮青:强调元素(◆ / prompt / 光标)— 由 charm 品红改为 deepx 青蓝品牌色
 
-	// outerStyle 不再画外框 — 整个主 UI 直接贴终端边缘,跟 Crush 风格一致。
+	// outerStyle 不再画外框 — 整个主 UI 直接贴终端边缘,视觉更干净。
 	// 保留变量以兼容历史调用,但不带 border。
 	outerStyle = lipgloss.NewStyle()
 

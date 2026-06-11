@@ -53,8 +53,8 @@ const inputAreaHeight = 3 + inputTopPad + inputBotPad
 // textarea 实际宽度 = m.width - inputGutterWidth。
 const inputGutterWidth = 2
 
-// inputPromptStyle 是 gutter 里 "❱ " 的样式(粉紫加粗,同 banner 主色)。
-var inputPromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("99")).Bold(true)
+// inputPromptStyle 是 gutter 里 "❱ " 的样式(亮青加粗,同 banner 品牌主色)。
+var inputPromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true)
 
 var (
 	scrollbarDividerStyle = lipgloss.NewStyle().Foreground(bannerDecoColor)     // 轨道:暗色粗 ┃

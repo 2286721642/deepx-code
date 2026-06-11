@@ -411,17 +411,17 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 	ti.SetHeight(3)
 	// 输入框样式定制:
 	//   - 第一行显示 "> ",后续行只缩进 2 空格(对齐到内容列)避免每行重复 prompt
-	//   - Prompt 染粉紫(同 banner 主色),focus / blur 状态都保留亮度
+	//   - Prompt 染亮青(同 banner 品牌主色),focus / blur 状态都保留亮度
 	//   - 内置 CursorLine 高亮(默认会给当前行加背景色)关掉,跟 chat 区无 chrome 风格一致
 	tas := ti.Styles()
 	tas.Focused.CursorLine = lipgloss.NewStyle()
 	tas.Blurred.CursorLine = lipgloss.NewStyle()
 	tas.Focused.Base = lipgloss.NewStyle()
 	tas.Blurred.Base = lipgloss.NewStyle()
-	// 光标样式:细竖条 + 粉紫色 + 缓慢 blink(600ms),跟 banner 主色一致,
+	// 光标样式:细竖条 + 亮青色 + 缓慢 blink(600ms),跟 banner 品牌主色一致,
 	// 避免默认 block 光标在中文/emoji 行上把字符整块反色显得突兀。
 	tas.Cursor.Shape = tea.CursorBar
-	tas.Cursor.Color = lipgloss.Color("213") // 亮粉,跟 banner deepx 渐变首色一致
+	tas.Cursor.Color = lipgloss.Color("51") // 亮青,跟 banner X 品牌符首色一致
 	tas.Cursor.Blink = true
 	tas.Cursor.BlinkSpeed = 600 * time.Millisecond
 	ti.SetStyles(tas)

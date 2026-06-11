@@ -1,37 +1,47 @@
-# deepx-code 演示录制脚本(vhs)
+# deepx-code 演示录制脚本(vhs)—— 工作模式切换
 #
 # 用法:
 #   brew install vhs          # macOS;其它平台见 https://github.com/charmbracelet/vhs
 #   vhs scripts/demo.tape     # 在仓库根目录跑,产出 assets/demo.gif
 #
-# 注意:演示会真实启动 deepx 并发起一次模型调用(用 ~/.deepx/model.yaml 的 key),
-# 会消耗少量 flash token。Sleep 时长按本机/网络延迟可能需要微调——若 GIF 录到
-# “半截”状态,调大下面发送后的 Sleep。
+# 前置:`deepx` 需在 PATH 且为最新构建(go install / make install),并已配置好
+#       ~/.deepx/model.yaml(演示本身不发模型调用,但启动要读配置,否则会弹首启向导)。
+# 说明:本演示是纯 UI(/working-mode 弹窗选择),不消耗 token、时长确定,无需按网络微调。
 
 Output assets/demo.gif
 
 Set Shell bash
 Set FontSize 16
 Set Width 1200
-Set Height 720
+Set Height 1000
 Set Padding 18
 Set Theme "Catppuccin Mocha"
 
-# 在一个干净的小项目里启动(避免加载旧会话历史),等 TUI + codegraph 预热(不录这段)
+# 在一个干净空目录里启动,并清掉它的历史会话 → 每次都从空白界面开始(预热不录)。
+# 会话存于 ~/.deepx/sessions/<sha1(workspace)[:16]>,这里按同一算法定位并删除。
 Hide
-Type "cd /tmp/deepx-demo && deepx"
+Type "mkdir -p /tmp/deepx-demo; rm -rf ~/.deepx/sessions/$(printf %s /tmp/deepx-demo | shasum | cut -c1-16); clear; cd /tmp/deepx-demo && deepx"
 Enter
-Sleep 4s
+Sleep 5s
 Show
 
-# 输入一个会触发 CodeGraph 的问题,展示:footer 活动行(思考→调用工具)+ 完成行
-Sleep 800ms
-Type "Greet 函数在哪定义、被谁调用?用 codegraph 查"
-Sleep 600ms
+# 展示完整初始界面:左 chat 区 + 右状态面板(banner / 工作区 / 模型 / 工作模式 / 沙箱 全可见)
+Sleep 2.2s
+
+# 打开工作模式选择弹窗
+Type "/working-mode"
+Sleep 900ms
 Enter
+Sleep 1.6s
 
-# 等模型 + 工具 + 回答(延迟不稳,留足缓冲;录到半截就调大)
-Sleep 14s
+# 在三种模式间切换:karpathy → openspec → superpowers → 回 openspec
+Down
+Sleep 1.1s
+Down
+Sleep 1.1s
+Up
+Sleep 1.1s
 
-# 停在“✓ 完成”那一帧
-Sleep 2500ms
+# 应用 openspec —— 右栏「工作模式」与提示同步更新
+Enter
+Sleep 3.2s
