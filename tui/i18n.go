@@ -332,10 +332,11 @@ var translations = map[string]map[Lang]string{
 			"- `@` — 引用文件(弹出文件选择器,选中后插入路径,模型按需读取)\n\n" +
 			"**快捷键**\n\n" +
 			"- `Enter` — 发送;模型回答中按 Enter 则把输入排队,本轮结束自动发出\n" +
+			"- `ctrl+j` — 换行(多行输入)\n" +
 			"- `Ctrl+B` — 显示/隐藏右侧状态栏\n" +
 			"- `Ctrl+V` — 粘贴(含图片)\n" +
 			"- `Esc` — 中断当前对话\n" +
-			"- `Ctrl+C` — 按两次退出程序(1 秒内;弹窗内则关弹窗)",
+			"- `Ctrl+C` — 清空输入框;输入为空时按两次退出程序(1 秒内;弹窗内则关弹窗)",
 		LangEN: "\n**Slash commands**\n\n" +
 			"- `/plan` — Switch to read-only mode (Read / List / Grep / Glob / Tree / Search / Fetch / Memory only)\n" +
 			"- `/auto` — Switch back to full-tools mode (default)\n" +
@@ -364,10 +365,11 @@ var translations = map[string]map[Lang]string{
 			"- `@` — Reference a file (opens a picker; inserts the path for the model to read)\n\n" +
 			"**Keybindings**\n\n" +
 			"- `Enter` — Send; while the model is responding, Enter queues your input and it's sent when the turn ends\n" +
+			"- `ctrl+j` — Newline (multi-line input)\n" +
 			"- `Ctrl+B` — Show/hide the right status panel\n" +
 			"- `Ctrl+V` — Paste (including images)\n" +
 			"- `Esc` — Interrupt current turn\n" +
-			"- `Ctrl+C` — Press twice within 1s to quit (closes modal if one is open)",
+			"- `Ctrl+C` — Clear the input; when empty, press twice within 1s to quit (closes modal if open)",
 	},
 
 	// === 模式提示 ===
@@ -616,8 +618,8 @@ var translations = map[string]map[Lang]string{
 		LangEN: "Press Ctrl+C again to quit deepx (within 1 second)",
 	},
 	"misc.input_placeholder": {
-		LangZH: "Type a message…  Enter 发送 · Option/Alt+Enter 换行 · Esc 中断",
-		LangEN: "Type a message…  Enter to send · Option/Alt+Enter newline · Esc interrupt",
+		LangZH: "Type a message…  Enter 发送 · ctrl+j 换行 · ctrl+c 清空 · Esc 中断",
+		LangEN: "Type a message…  Enter send · ctrl+j newline · ctrl+c clear · Esc interrupt",
 	},
 	"misc.history_suffix": {
 		LangZH: "_(以上为历史对话,共 %d 条)_",

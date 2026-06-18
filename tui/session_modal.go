@@ -142,6 +142,7 @@ func (m *model) toggleStatusPanel() {
 	leftW, vpH := m.layout()
 	m.chatViewport.SetWidth(leftW)
 	m.chatViewport.SetHeight(vpH)
+	m.input.SetWidth(leftW - inputGutterWidth) // 输入区跟着左列宽变化(状态栏显隐改变 leftW)
 	m.selecting = false
 	m.refreshViewport()
 }

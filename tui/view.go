@@ -32,11 +32,8 @@ func (m model) wrapView(content string) tea.View {
 	if m.showSetup || m.showMcpAdd || m.showSkillAdd || m.showWebConfig {
 		v.MouseMode = tea.MouseModeNone
 	}
-	// 开 Kitty keyboard 协议的"alternate keys"上报 — 让 Ctrl+Enter / Shift+Enter
-	// 等组合键以独立 escape 序列发到程序,而不是被终端合并成普通 Enter。
-	// 支持的终端:Kitty / Wezterm / Foot / iTerm2(实验性);macOS Terminal.app 不支持
-	// (这俩组合在 Terminal.app 下仍跟 Enter 等价,只能用 Alt/Option+Enter 换行)。
-	v.KeyboardEnhancements.ReportAlternateKeys = true
+	// 换行键统一为 ctrl+j(LF,终端原生、不依赖 Kitty 协议、三平台一致,见 issue #124),
+	// 不再绑定 Ctrl+Enter / Shift+Enter,故无需开 Kitty "alternate keys" 上报。
 	return v
 }
 
@@ -45,9 +42,12 @@ func (m model) wrapView(content string) tea.View {
 const inputTopPad = 2
 const inputBotPad = 0
 
-// inputAreaHeight 是底部输入框占用的固定行数:textarea 3 行 + 上下留白。
-// textarea 高 = inputAreaHeight - inputTopPad - inputBotPad。
-const inputAreaHeight = 3 + inputTopPad + inputBotPad
+// inputTextRows 是输入框 textarea 的固定显示行数。内容超过时不长高,
+// 靠 ↑/↓ 移动光标带动 textarea 内部滚动(见 model.go 按键处理)。
+const inputTextRows = 3
+
+// inputAreaHeight 是底部输入框区域占用的固定行数:textarea inputTextRows 行 + 上下留白。
+const inputAreaHeight = inputTextRows + inputTopPad + inputBotPad
 
 // inputGutterWidth 是输入区左侧固定 gutter 列宽:首行画 "❱ ",其余行 "  "。
 // textarea 实际宽度 = m.width - inputGutterWidth。
@@ -181,8 +181,8 @@ func (m model) View() tea.View {
 		leftW = 1
 	}
 	// 排队区(流式中暂存的待发送消息)挂在输入框上方,占 queuedH 行,从 body 高度里扣。
-	// 别让它把对话挤没:至少给 chat 留 1 行。
-	queuedLines := m.queuedDisplayLines(m.width)
+	// 别让它把对话挤没:至少给 chat 留 1 行。它在左列,按 leftW 折行。
+	queuedLines := m.queuedDisplayLines(leftW)
 	if maxQ := m.height - inputAreaHeight - 1; len(queuedLines) > maxQ {
 		if maxQ < 0 {
 			maxQ = 0
@@ -208,34 +208,12 @@ func (m model) View() tea.View {
 		chatLines = chatLines[len(chatLines)-bodyH:]
 	}
 
-	// 右栏:status section 区,固定 rightW × bodyH。隐藏时全空行(不渲染状态栏)。
-	rightLines := make([]string, bodyH)
-	if !m.hideStatusPanel {
-		right := lipgloss.NewStyle().
-			Width(rightW).
-			Height(bodyH).
-			Padding(0, 1).
-			Render(m.rightPanelView())
-		rightLines = strings.Split(right, "\n")
-		for len(rightLines) < bodyH {
-			rightLines = append(rightLines, strings.Repeat(" ", rightW))
-		}
-		if len(rightLines) > bodyH {
-			rightLines = rightLines[:bodyH]
-		}
-	}
+	// === 布局:左列(对话 + 输入)│ 分隔线 │ 右列(状态栏,全高)===
+	// 状态栏独占右半区、从顶到底;分隔线一条 ┃ 贯穿全高,把左半区(对话+输入)与状态栏隔开。
+	// 输入区因此收进左列(宽 leftW,见 resize / toggleStatusPanel 的 SetWidth)。
+	// 分隔线始终贯穿全高;状态栏隐藏(rightW==0)时右列为空,线仍在最右列一直到底。
 
-	// 手动逐行拼接:chat_line + 分隔线/滚动条(scrollbarWidth 列)+ right_line。
-	divs := m.scrollbarDividers(bodyH)
-	bodyLines := make([]string, bodyH)
-	for i := 0; i < bodyH; i++ {
-		bodyLines[i] = chatLines[i] + divs[i] + rightLines[i]
-	}
-	body := strings.Join(bodyLines, "\n")
-
-	// 输入区 = 左侧固定 gutter + 右侧 textarea,逐行拼接。
-	// gutter 首行 "> "(粉紫),其余行 "  ";textarea 宽度已是 m.width-gutter。
-	// 这样多行粘贴 / 滚动时 "> " 始终钉在左上角,不会跟内容滚走。
+	// 输入列内容:gutter + textarea 逐行拼接,首行 "❱ ";上接活动状态行/留白,中间夹排队区。
 	taView := m.input.View()
 	taLines := strings.Split(taView, "\n")
 	if m.inputAllSelected {
@@ -257,27 +235,68 @@ func (m model) View() tea.View {
 		}
 		inputRows[i] = gutter + tl
 	}
-	// 输入区不画竖分隔线 —— 分隔线只到 body 底(对话+右栏区),输入区整宽。
-	// 顶部 / 底部按 inputTopPad / inputBotPad 留白,normalizeFrame 会把空行补成整宽。
 	inputLines := make([]string, 0, queuedH+len(inputRows)+inputTopPad+inputBotPad)
 	for i := 0; i < inputTopPad; i++ {
-		// 顶部留白的第一行用来挂活动状态行(运行中 spinner+耗时 / 空闲"就绪"),
-		// 其余仍是空行。inputTopPad 不变,光标 Y(bodyH+inputTopPad)也不变。
+		// 顶部留白第一行挂活动状态行(运行中 spinner+耗时 / 空闲"就绪"),其余空行。
+		// inputTopPad 不变 → 光标 Y(bodyH+queuedH+inputTopPad)也不变。
 		if i == 0 && inputTopPad > 0 {
-			inputLines = append(inputLines, m.statusFooterLine(m.width))
+			inputLines = append(inputLines, m.statusFooterLine(leftW))
 			continue
 		}
-		inputLines = append(inputLines, "") // 顶部留白行
+		inputLines = append(inputLines, "")
 	}
-	// 排队区放在活动状态行之后、输入框之前(紧贴输入框),让"待发送"和你正在打的字成组。
-	inputLines = append(inputLines, queuedLines...)
+	inputLines = append(inputLines, queuedLines...) // 排队区紧贴输入框上方
 	inputLines = append(inputLines, inputRows...)
 	for i := 0; i < inputBotPad; i++ {
-		inputLines = append(inputLines, "") // 底部留白行
+		inputLines = append(inputLines, "")
 	}
-	inputBlock := strings.Join(inputLines, "\n")
 
-	mainUI := lipgloss.JoinVertical(lipgloss.Left, body, inputBlock)
+	// 左列 = 对话(bodyH 行)+ 输入列,逐行锁到精确 leftW(短补空格/长截断),
+	// 保证分隔线在每行都落在同一列、不会参差。
+	leftLines := make([]string, 0, len(chatLines)+len(inputLines))
+	leftLines = append(leftLines, chatLines...)
+	leftLines = append(leftLines, inputLines...)
+	leftCol := strings.Split(padLinesToWidth(strings.Join(leftLines, "\n"), leftW), "\n")
+
+	// 右列 = 状态栏,全高 rightW;隐藏时空。
+	panelShown := !m.hideStatusPanel && rightW > 0
+	rightCol := make([]string, m.height)
+	if panelShown {
+		right := lipgloss.NewStyle().
+			Width(rightW).
+			Height(m.height).
+			Padding(0, 1).
+			Render(m.rightPanelView())
+		rightCol = strings.Split(right, "\n")
+		for len(rightCol) < m.height {
+			rightCol = append(rightCol, strings.Repeat(" ", rightW))
+		}
+		if len(rightCol) > m.height {
+			rightCol = rightCol[:m.height]
+		}
+	}
+
+	// 分隔线始终贯穿全高:对话区那 bodyH 行是滚动条(可拖滑块,亮白滑块+暗轨道),
+	// 其余行(输入区)是纯暗色 ┃ —— 状态栏显隐都一样,线一直到底。
+	divs := m.scrollbarDividers(bodyH)
+	track := scrollbarDividerStyle.Render("┃")
+	rows := make([]string, m.height)
+	for i := 0; i < m.height; i++ {
+		l := strings.Repeat(" ", leftW)
+		if i < len(leftCol) {
+			l = leftCol[i]
+		}
+		d := track
+		if i < bodyH && i < len(divs) {
+			d = divs[i]
+		}
+		r := ""
+		if i < len(rightCol) {
+			r = rightCol[i]
+		}
+		rows[i] = l + d + r
+	}
+	mainUI := strings.Join(rows, "\n")
 
 	// 复制成功提示:在鼠标松开的位置叠一个绿色"✓ 已复制"小标(copyHintClearMsg 到点清空)。
 	if m.copyHint != "" {
