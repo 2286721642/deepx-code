@@ -441,7 +441,9 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 	ti.Placeholder = T("misc.input_placeholder")
 	ti.CharLimit = 4000
 	ti.ShowLineNumbers = false
-	ti.SetHeight(3)
+	// 输入框固定 inputRows 行高。内容多于此时,靠 ↑/↓ 移动光标带动 textarea 内部滚动,
+	// 把多出的行"移出来"看(见按键处理里 ↑/↓ 落到 input.Update 的注释)。
+	ti.SetHeight(inputTextRows)
 	// 输入框样式定制:
 	//   - 第一行显示 "> ",后续行只缩进 2 空格(对齐到内容列)避免每行重复 prompt
 	//   - Prompt 染亮青(同 banner 品牌主色),focus / blur 状态都保留亮度
@@ -1196,10 +1198,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		leftW, vpH := m.layout()
 		m.chatViewport.SetWidth(leftW)
 		m.chatViewport.SetHeight(vpH)
-		// 输入区 = 左侧固定 gutter("> ")+ 右侧 textarea。textarea 占整宽 m.width-gutter
-		//(分隔线只到 body 底,输入区横跨整行)。gutter 由 view.go 单独画。
-		m.input.SetWidth(m.width - inputGutterWidth)
-		m.input.SetHeight(inputAreaHeight - 2) // 减去上下各 1 行居中留白
+		// 输入区收进左列(与对话同宽):textarea 宽 = leftW - gutter。
+		// 状态栏占满全高、分隔线贯穿到底,所以输入不再横跨整宽。gutter 由 view.go 单独画。
+		m.input.SetWidth(leftW - inputGutterWidth)
 		// 窗口尺寸变了 → wrap 重算 → 老 line 号失效,必须清选区
 		m.selecting = false
 		m.refreshViewport()
@@ -1239,8 +1240,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 选区只认内容列 [chatLeft, leftW),分隔线列按 X 与上面互斥。
 		inChat := msg.X >= chatLeft && msg.X < leftW &&
 			msg.Y >= chatTop && msg.Y < chatBottom
-		// 输入区:body 下方整块(空白行 + textarea 行),Y ∈ [vpH, m.height)。
-		inInput := msg.Y >= vpH && msg.Y < m.height && msg.X >= 0 && msg.X < m.width
+		// 输入区:左列 body 下方那块(空白行 + textarea 行),Y ∈ [vpH, m.height) 且 X ∈ [0, leftW)。
+		// X 上界收到 leftW —— 右侧是全高状态栏,点那里不该进输入编辑。
+		inInput := msg.Y >= vpH && msg.Y < m.height && msg.X >= 0 && msg.X < leftW
 
 		if inInput {
 			// 单击进入输入区:清 chat 选区 + 记下拖拽起点(双击全选已移除;全选只走真拖动)。
@@ -2038,10 +2040,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "ctrl+c":
-			// Ctrl+C 双击退出保护:防止误触一下就退。
+			// 输入框有内容(或挂了图)→ 单次 Ctrl+C 清空,符合 shell / REPL 习惯。
+			// 不计入退出双击(重置计时),清完再按才进入下面的退出逻辑。
+			if strings.TrimSpace(m.input.Value()) != "" || len(m.attachedImagePaths) > 0 {
+				m.input.SetValue("")
+				m.attachedImagePaths = nil
+				m.inputAllSelected = false
+				m.lastCtrlCAt = time.Time{}
+				m.input.SetHeight(inputTextRows) // 多行清空后把视口/高度复位
+				return m, nil
+			}
+			// 输入框为空时才走"双击退出"保护:防止误触一下就退。
 			//   - streaming 中第一次:先取消(同 Esc 行为)+ 提示再按退出
 			//   - idle 中第一次:只提示,不退
-			//   - 任何时候 2s 内第二次:tea.Quit
+			//   - 任何时候窗口内第二次:tea.Quit
 			now := time.Now()
 			if !m.lastCtrlCAt.IsZero() && now.Sub(m.lastCtrlCAt) <= ctrlcExitWindow {
 				// 第二次,窗口内,退
@@ -2113,20 +2125,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, nil
-		case "up", "down", "pgup", "pgdown", "pageup", "pagedown", "home", "end", "ctrl+u", "ctrl+d":
-			// chat 区滚动键全部拦截,textarea 不再消费方向键 — 用户明确要求 ↑/↓
-			// 滚 chat,代价是多行 input 不能用方向键移光标(仍可 Left/Right + Backspace 编辑)。
+		case "pgup", "pgdown", "pageup", "pagedown", "home", "end", "ctrl+u", "ctrl+d":
+			// 翻页 / 顶底键滚 chat。↑/↓ 不在此列 —— 它们落到下方 input.Update 移动输入框光标:
+			// 输入区固定 3 行,光标移过可视区会带动 textarea 内部滚动,把多出的行"移出来"看。
+			// chat 滚动仍可用 PgUp/PgDn、鼠标滚轮、拖动右侧滚动条。
 			var c tea.Cmd
 			m.chatViewport, c = m.chatViewport.Update(msg)
 			return m, c
-		case "alt+enter", "alt+\r", "ctrl+enter", "ctrl+\r", "shift+enter":
+		case "ctrl+j":
 			// 在光标处插入换行,实现多行输入。Enter 仍走下方 submit 分支。
-			// 同时接 Alt+Enter / Ctrl+Enter / Shift+Enter — 不同终端 / OS 上的"换行"组合键各异,
-			// macOS Terminal.app 多用 Alt+Enter,iTerm2 / VSCode / Linux 用户更习惯 Ctrl+Enter / Shift+Enter。
+			// 换行键统一为 ctrl+j:它就是 LF(\n),终端原生支持、三平台一致、不被 OS 拦截,
+			// bubbletea 报成 "ctrl+j",与 Enter(CR→"enter")天然区分 —— 终端里唯一可靠的换行键。
+			// (不再接 Alt/Ctrl/Shift+Enter:Win11 下 Alt+Enter 被系统吃掉切全屏 #124,
+			//  Ctrl/Shift+Enter 在 Terminal.app 等又跟 Enter 不可区分,留着只会平台不一致。)
 			if m.streaming {
 				return m, nil
 			}
 			m.input.InsertRune('\n')
+			// InsertRune 直调不会重定位 textarea 内部视口(只有走 textarea.Update 末尾才会),
+			// 在已满 3 行时插入新行后光标会跑到可视区外、被钳回行首。SetHeight(同值)内部会
+			// 调 repositionView 把视口滚到光标行,且不动光标——以此手动触发一次重定位。
+			m.input.SetHeight(inputTextRows)
 			return m, nil
 		case "ctrl+b":
 			// 显示/隐藏右侧状态栏(chat 铺满整宽);记忆到 meta。
