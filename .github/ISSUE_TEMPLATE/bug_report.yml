@@ -1,0 +1,96 @@
+name: 🐛 Bug 报告 / Bug report
+description: 程序报错、崩溃、行为不符合预期 / Something is broken or behaves unexpectedly
+title: "🐛 "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈!请尽量填全下面的信息——**环境信息缺失会让问题无法定位**(例如「在 Alpine 容器里跑不起来」必须说明发行版和安装方式)。
+        Thanks! Please fill in as much as possible — missing environment info makes bugs impossible to diagnose.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认 / Preflight
+      options:
+        - label: 我已搜索过 issues,没有重复 / I searched existing issues and found no duplicate
+          required: true
+        - label: 我用的是最新版本(或已说明所用版本) / I'm on the latest version (or stated my version below)
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      description: 运行 `deepx --version`,或看启动右栏版本号 / Run `deepx --version`, or check the version in the right panel
+      placeholder: "例如 / e.g. 0.2.79"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: 安装方式 / Install method
+      description: 怎么拿到的二进制 / How you obtained the binary
+      options:
+        - install.sh 一键安装脚本 / install script
+        - 直接下载 release 二进制手动运行 / downloaded release binary, ran directly
+        - gitee 镜像 / gitee mirror
+        - go install / 从源码编译 / built from source
+        - 其它 / other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统 / OS
+      options:
+        - "Linux - glibc 常规发行版(Ubuntu/Debian/CentOS 等) / glibc distro"
+        - "Linux - Alpine / musl(含容器) / Alpine / musl (incl. containers)"
+        - macOS (Apple Silicon / arm64)
+        - macOS (Intel / amd64)
+        - Windows
+        - 其它 / other
+    validations:
+      required: true
+
+  - type: input
+    id: env-detail
+    attributes:
+      label: 环境细节 / Environment detail
+      description: 发行版版本、是否在 Docker/容器里、CPU 架构(amd64/arm64)等 / Distro version, whether inside Docker/container, CPU arch
+      placeholder: "例如 / e.g. Alpine 3.20, Docker 容器, amd64"
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 问题描述 / What happened
+      description: 发生了什么?期望是什么? / What went wrong? What did you expect?
+      placeholder: 描述现象、期望行为 / Describe the symptom and expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: 一步步怎么触发的 / Step-by-step to trigger it
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 报错信息 / 日志 / Error output / logs
+      description: 把终端报错、退出码、堆栈原样贴上(会自动按代码块渲染) / Paste raw terminal error, exit code, stack trace
+      render: shell
+    validations:
+      required: false

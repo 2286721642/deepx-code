@@ -1,0 +1,7 @@
+# 关闭空白 issue:强制走上面的模版,避免「随便提」缺信息。
+# Disable blank issues: force using a template so reports carry the needed info.
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 文档 / Documentation (README)
+    url: https://github.com/itmisx/deepx-code#readme
+    about: 安装、配置、常见问题先看 README(含 Alpine/musl 等说明)/ Check the README first for install, config, and FAQ
