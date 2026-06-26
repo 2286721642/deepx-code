@@ -689,6 +689,9 @@ func StartStream(
 
 			// roundProgress = 本轮是否有任一工具调用成功;决定 noProgressRounds 是归零还是累加。
 			roundProgress := false
+			// turnToolBytes = 本轮已计入历史的工具结果合计字节;clampTurnToolOutput 据此做「本轮合计上限」,
+			// 防止一轮并发多个 tool call、单条都 ≤96KB 但合计撑爆上下文(issue #135 遗留缺口)。每轮(此处)归零。
+			turnToolBytes := 0
 
 			// 执行每个工具调用,把结果加进 convo。
 			// 这些工具被 deepx 拦截 (不走 Executor):
@@ -924,7 +927,9 @@ func StartStream(
 					Role:       "tool",
 					ToolCallID: tc.ID,
 					Name:       tc.Function.Name,
-					Content:    result.Output,
+					// 本轮合计上限:单条已被 clampToolOutput 限到 96KB,这里再按「本轮所有工具结果合计」收口,
+					// 防止一轮并发多条把上下文顶爆(issue #135)。只截入历史的内容,UI(上方 ToolCallResultMsg)仍展示完整结果。
+					Content: clampTurnToolOutput(tc.Function.Name, result.Output, &turnToolBytes),
 				})
 			}
 			ch <- HistoryUpdateMsg{History: convo}

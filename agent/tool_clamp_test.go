@@ -60,3 +60,46 @@ func TestClampToolOutput_UTF8Boundary(t *testing.T) {
 		t.Fatalf("clamped multibyte output must remain valid UTF-8")
 	}
 }
+
+func TestClampTurnToolOutput_AggregateCap(t *testing.T) {
+	// 模拟一轮里并发多条工具结果:单条都 ≤96KB(过了 clampToolOutput),
+	// 但合计要被「本轮合计上限」收口。
+	spent := 0
+	chunk := strings.Repeat("x", maxToolOutputBytes) // 单条 96KB,符合单条上限
+
+	round := 0
+	for range 10 { // 10×96KB = 960KB,远超 256KB 合计上限
+		out := clampTurnToolOutput("Read", chunk, &spent)
+		round++
+		if !utf8.ValidString(out) {
+			t.Fatalf("第 %d 条结果应为合法 UTF-8", round)
+		}
+		if spent > maxToolOutputBytesPerTurn {
+			t.Fatalf("spent 不应超过本轮合计上限:%d > %d", spent, maxToolOutputBytesPerTurn)
+		}
+	}
+	// 合计真正写入历史的字节(spent)必须被压在上限内。
+	if spent > maxToolOutputBytesPerTurn {
+		t.Fatalf("本轮合计未收口:spent=%d", spent)
+	}
+	// 预算用尽后,后续结果应只剩简短占位(远小于一条 96KB)。
+	last := clampTurnToolOutput("Read", chunk, &spent)
+	if len(last) > 1024 {
+		t.Fatalf("预算用尽后应只返回简短占位,got %d bytes", len(last))
+	}
+	if !strings.Contains(last, "未计入上下文") {
+		t.Fatalf("预算用尽占位应提示未计入上下文,got %q", last)
+	}
+}
+
+func TestClampTurnToolOutput_SmallPassthrough(t *testing.T) {
+	// 预算充足时,单条小结果原样通过并正确累加 spent。
+	spent := 0
+	in := "ok: 3 files changed"
+	if got := clampTurnToolOutput("Bash", in, &spent); got != in {
+		t.Fatalf("预算充足的小结果应原样通过,got %q", got)
+	}
+	if spent != len(in) {
+		t.Fatalf("spent 应累加为 %d,got %d", len(in), spent)
+	}
+}

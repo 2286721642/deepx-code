@@ -18,6 +18,11 @@ const (
 	// minBase64RunBytes:连续 base64 字符达到这个长度即判定为二进制 blob(截图 / 附件等),
 	// 整段替换为占位符。正常文本 / 代码不会出现这么长且不含空白的连续串。
 	minBase64RunBytes = 4096
+	// maxToolOutputBytesPerTurn:单个 assistant turn 内,所有工具结果写入历史的「合计」字节上限。
+	// 单条已被 clampToolOutput 限到 maxToolOutputBytes;但一轮可并发多个 tool call,合计无人约束 ——
+	// K×96KB 仍能一轮把上下文顶爆(issue #135 的遗留缺口)。超预算后本轮后续结果整体替换为简短占位。
+	// 256KB ≈ 容纳 2~3 条满载结果,够正常一轮多工具用,又远小于上下文窗口。
+	maxToolOutputBytesPerTurn = 256 * 1024
 )
 
 // clampToolOutput 把工具结果压到可安全入历史的大小:
@@ -34,9 +39,37 @@ func clampToolOutput(name, out string) string {
 		b = b[:len(b)-1]
 	}
 	return string(b) + fmt.Sprintf(
-		"\n\n[…%s 返回 %d 字节,已截断至 %d 字节,防止撑爆上下文(issue #135)。"+
+		"\n\n[…%s 返回 %d 字节,已截断至 %d 字节,防止撑爆上下文。"+
 			"请缩小范围重试:读文件用 offset/limit 分页、grep 收窄匹配、命令只取必要输出。]",
 		name, len(out), len(b))
+}
+
+// clampTurnToolOutput 在 clampToolOutput(单条上限)之上再加一道「本轮合计上限」。
+// spent 指向本轮已计入历史的工具结果字节数,每个 assistant turn 开始时由调用方置 0。
+// 预算够:截到剩余预算内(UTF-8 边界)并累加 spent;预算用尽:整条替换为简短占位,
+// 提示模型减少单轮并发工具调用 / 分多轮获取,避免一轮 K 条结果合计撑爆上下文(issue #135)。
+func clampTurnToolOutput(name, out string, spent *int) string {
+	remaining := maxToolOutputBytesPerTurn - *spent
+	if remaining <= 0 {
+		return fmt.Sprintf(
+			"[本轮工具结果合计已达 %dKB 上限,%s 的结果未计入上下文。"+
+				"请减少单轮并发的工具调用、分多轮获取,或用更聚焦的查询缩小输出。]",
+			maxToolOutputBytesPerTurn/1024, name)
+	}
+	if len(out) <= remaining {
+		*spent += len(out)
+		return out
+	}
+	b := []byte(out)[:remaining]
+	// 回退到合法 UTF-8 边界,避免截出半个多字节字符(发给 API 会乱码 / 被拒)。
+	for len(b) > 0 && !utf8.Valid(b) {
+		b = b[:len(b)-1]
+	}
+	*spent += len(b)
+	return string(b) + fmt.Sprintf(
+		"\n\n[…本轮工具结果合计接近 %dKB 上限,%s 的结果被进一步截断。"+
+			"请分多轮获取或缩小范围重试。]",
+		maxToolOutputBytesPerTurn/1024, name)
 }
 
 // stripBase64Blobs 把每一段足够长的连续 base64 字符串替换为简短占位符。
@@ -55,7 +88,7 @@ func stripBase64Blobs(s string) string {
 				j++
 			}
 			if j-i >= minBase64RunBytes {
-				fmt.Fprintf(&b, "[…%d 字节 base64 二进制数据已省略(截图 / 附件不入上下文,issue #135)]", j-i)
+				fmt.Fprintf(&b, "[…%d 字节 base64 二进制数据已省略(截图 / 附件不入上下文)]", j-i)
 				i = j
 				continue
 			}
