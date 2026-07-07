@@ -457,7 +457,7 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 
 	sp := spinner.New()
 	sp.Spinner = spinner.MiniDot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("99"))
+	sp.Style = lipgloss.NewStyle().Foreground(spinnerColor)
 
 	ti := textarea.New()
 	ti.Placeholder = T("misc.input_placeholder")
@@ -478,7 +478,7 @@ func initialModel(models agent.ModelConfig, needsSetup bool, version string, hub
 	// 光标样式:细竖条 + 亮青色 + 缓慢 blink(600ms),跟 banner 品牌主色一致,
 	// 避免默认 block 光标在中文/emoji 行上把字符整块反色显得突兀。
 	tas.Cursor.Shape = tea.CursorBar
-	tas.Cursor.Color = lipgloss.Color("51") // 亮青,跟 banner X 品牌符首色一致
+	tas.Cursor.Color = cursorColor // 品牌青,亮底自适应为深青(见 applyTheme)
 	tas.Cursor.Blink = true
 	tas.Cursor.BlinkSpeed = 600 * time.Millisecond
 	ti.SetStyles(tas)
@@ -1076,6 +1076,8 @@ func (m model) Init() tea.Cmd {
 	// checkForUpgradeCmd 异步打 GitHub Releases API,完成后通过 upgradeCheckResult 回送 Update。
 	// cursorBlinkTick 自己驱动真实光标的明灭节奏。
 	cmds := []tea.Cmd{textinput.Blink, m.input.Focus(), checkForUpgradeCmd(m.version), cursorBlinkTick()}
+	// 探测终端背景明暗:回应经 tea.BackgroundColorMsg 到 Update,据此切亮/暗主题(issue #163)。
+	cmds = append(cmds, tea.RequestBackgroundColor)
 	// 重启检测到前缀变化且历史够大时,在首请求前先跑一次缓存友好压缩。
 	if m.pendingCompactSys != "" {
 		cmds = append(cmds, m.restartCompactionCmd())
@@ -1244,6 +1246,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case string(LangEN):
 			m.applyLang(LangEN)
 		}
+		return m, nil
+
+	case tea.BackgroundColorMsg:
+		// 终端背景明暗探测结果:切亮/暗主题。applyTheme 返回 false = 主题未变(且已初始化过),
+		// 直接跳过。切换后清 markdown renderer 缓存(旧实例 bake 的是旧主题的 glamour 样式)+
+		// 重着色 spinner / 光标 + 重绘。见 applyTheme(issue #163)。
+		if !applyTheme(msg.IsDark()) {
+			return m, nil
+		}
+		m.mdRenderers = nil          // 旧实例 bake 的是旧主题的 glamour 样式,丢弃重建
+		m.chatContent.InvalidateRender() // 清掉每段旧主题的 ANSI 缓存,否则宽度没变时 Render 复用旧色(需拖窗口才刷新)
+		m.spinner.Style = lipgloss.NewStyle().Foreground(spinnerColor)
+		tas := m.input.Styles()
+		tas.Cursor.Color = cursorColor
+		m.input.SetStyles(tas)
+		m.refreshViewport()
 		return m, nil
 
 	case tea.WindowSizeMsg:
@@ -3829,7 +3847,12 @@ func (m *model) mdRenderer(width int) *glamour.TermRenderer {
 	if r, ok := m.mdRenderers[width]; ok {
 		return r
 	}
+	// 亮色终端用 glamour 的 LightStyleConfig(深色前景),暗色用 DarkStyleConfig,
+	// 否则助手 markdown 在白底上是浅色前景、几乎看不见(issue #163)。
 	style := styles.DarkStyleConfig // value copy
+	if !darkBackground {
+		style = styles.LightStyleConfig
+	}
 	style.Document.BlockPrefix = ""
 	style.Document.BlockSuffix = ""
 	zero := uint(0)

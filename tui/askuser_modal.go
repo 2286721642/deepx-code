@@ -99,7 +99,7 @@ func (m model) askUserBlock() string {
 	}
 	title := titleStyle.Render(head) + dim.Render("   ("+kind+")")
 
-	question := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")).Width(54).Render(q.Question)
+	question := lipgloss.NewStyle().Bold(true).Foreground(softFgColor).Width(54).Render(q.Question)
 
 	var rows []string
 	for i, opt := range q.Options {
@@ -125,7 +125,7 @@ func (m model) askUserBlock() string {
 		case selected:
 			seg = on.Render(seg)
 		case i == m.askOptIdx:
-			seg = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(seg)
+			seg = lipgloss.NewStyle().Foreground(softFgColor).Render(seg)
 		default:
 			seg = dim.Render(seg)
 		}

@@ -92,7 +92,7 @@ func (m *model) loadCurrentConversation() {
 	m.chatContent.Reset()
 	if m.session != nil {
 		m.workingMode = agent.NormalizeWorkingMode(m.session.LoadWorkingMode()) // 切会话同步工作模式
-		m.restoreModelPin(m.session.LoadModelPin())                            // 切会话同步 /model 锁定(issue #43)
+		m.restoreModelPin(m.session.LoadModelPin())                             // 切会话同步 /model 锁定(issue #43)
 		m.summary = m.session.LoadSummary()
 		var gobHistory []agent.ChatMessage
 		if err := m.session.LoadGob("history.gob", &gobHistory); err == nil && len(gobHistory) > 0 {
@@ -234,7 +234,7 @@ func (m model) sessionListModalBlock() string {
 			rows = append(rows, lipgloss.NewStyle().Bold(true).
 				Foreground(lipgloss.Color("15")).Background(lipgloss.Color("238")).Render(line))
 		} else {
-			rows = append(rows, lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(line))
+			rows = append(rows, lipgloss.NewStyle().Foreground(softFgColor).Render(line))
 		}
 	}
 	footerKey := "session.modal.footer"

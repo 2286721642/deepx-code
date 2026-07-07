@@ -151,7 +151,7 @@ func (m model) mcpDeleteModalBlock() string {
 	rows := make([]string, 0, len(m.mcpDelNames))
 	for i, name := range m.mcpDelNames {
 		marker := "  "
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		style := lipgloss.NewStyle().Foreground(softFgColor)
 		if i == m.mcpDelIdx {
 			marker = "▸ "
 			style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Background(lipgloss.Color("236"))
