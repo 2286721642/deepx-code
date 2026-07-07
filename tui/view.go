@@ -57,7 +57,7 @@ const inputGutterWidth = 2
 var inputPromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true)
 
 var (
-	scrollbarDividerStyle = lipgloss.NewStyle().Foreground(bannerDecoColor)     // 轨道:暗色粗 ┃
+	scrollbarDividerStyle = lipgloss.NewStyle().Foreground(bannerDecoColor)       // 轨道:暗色粗 ┃
 	scrollbarThumbStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255")) // 滑块:亮白粗 ┃
 )
 
@@ -574,11 +574,11 @@ func statusIcon(s string) string {
 // reviewBlock 渲染审核确认弹窗。
 func (m model) reviewBlock() string {
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")).Render(T("review.title"))
-	desc := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(
+	desc := lipgloss.NewStyle().Foreground(softFgColor).Render(
 		T("review.desc_prefix") + m.reviewToolName + " " + truncateReviewArgs(m.reviewToolArgs, 40))
 
-	yesStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	noStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	yesStyle := lipgloss.NewStyle().Foreground(softFgColor)
+	noStyle := lipgloss.NewStyle().Foreground(softFgColor)
 	if m.reviewYesNo {
 		yesStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("236"))
 	} else {
@@ -635,7 +635,7 @@ func (m model) langModalBlock() string {
 	rows := make([]string, 0, len(options))
 	for i, opt := range options {
 		marker := "  "
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		style := lipgloss.NewStyle().Foreground(softFgColor)
 		if i == m.langModalIdx {
 			marker = "▸ "
 			style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("236"))
@@ -665,7 +665,7 @@ func (m model) providerModalBlock() string {
 	rows := make([]string, 0, len(m.providerNames))
 	for i, name := range m.providerNames {
 		marker := "  "
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		style := lipgloss.NewStyle().Foreground(softFgColor)
 		if i == m.providerModalIdx {
 			marker = "▸ "
 			style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("236"))
@@ -700,7 +700,7 @@ func (m model) workingModeModalBlock() string {
 	rows := make([]string, 0, len(options))
 	for i, opt := range options {
 		marker := "  "
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		style := lipgloss.NewStyle().Foreground(softFgColor)
 		if i == m.workingModeModalIdx {
 			marker = "▸ "
 			style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("236"))
@@ -735,7 +735,7 @@ func (m model) sandboxModalBlock() string {
 	rows := make([]string, 0, len(options))
 	for i, opt := range options {
 		marker := "  "
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		style := lipgloss.NewStyle().Foreground(softFgColor)
 		if i == m.sandboxModalIdx {
 			marker = "▸ "
 			style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("236"))
@@ -765,7 +765,7 @@ func (m model) modelModalBlock() string {
 	rows := make([]string, 0, len(options))
 	for i, opt := range options {
 		marker := "  "
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		style := lipgloss.NewStyle().Foreground(softFgColor)
 		if i == m.modelModalIdx {
 			marker = "▸ "
 			style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("236"))
@@ -803,7 +803,6 @@ func (m model) rightPanelView() string {
 
 	// 路径压缩 ~/.../tail
 	cwd := abbreviatePath(m.workspace, rightPanelWidth-2)
-
 
 	// 权限模式(plan/auto/review)单独成段。任务执行状态(idle/streaming)已在输入框上方的
 	// statusFooterLine 实时显示,右栏不再重复。

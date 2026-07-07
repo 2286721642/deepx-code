@@ -34,16 +34,30 @@ var deepxLetters = [5][bannerArtRows]string{
 }
 
 // deepxLetterColors 每个字母一色,组成青→蓝渐变。ANSI 256 调色板等距取色,跨终端稳。
-var deepxLetterColors = [5]color.Color{
-	lipgloss.Color("51"), // 亮青
-	lipgloss.Color("45"), // 青
-	lipgloss.Color("39"), // 青蓝
-	lipgloss.Color("33"), // 蓝
-	lipgloss.Color("27"), // 索蓝
-}
+// 由 applyTheme 在 dark/light 两套渐变间切换;初值 = 暗色档。
+var deepxLetterColors = darkLetterColors
 
-// bannerSuffixColor "-code" 后缀色(浅灰,作字样副件);bannerDecoColor 分割线色(亦被
-// scrollbar 轨道 / reasoning 角色名复用,留作通用蓝色强调)。
+// darkLetterColors 暗底:亮青→索蓝。lightLetterColors 亮底:整体压深(深青→深蓝),
+// 白底仍可读且保留青→蓝品牌走向。
+var (
+	darkLetterColors = [5]color.Color{
+		lipgloss.Color("51"), // 亮青
+		lipgloss.Color("45"), // 青
+		lipgloss.Color("39"), // 青蓝
+		lipgloss.Color("33"), // 蓝
+		lipgloss.Color("27"), // 索蓝
+	}
+	lightLetterColors = [5]color.Color{
+		lipgloss.Color("31"), // 深青
+		lipgloss.Color("32"), // 青蓝
+		lipgloss.Color("33"), // 蓝
+		lipgloss.Color("27"), // 索蓝
+		lipgloss.Color("26"), // 深蓝
+	}
+)
+
+// bannerSuffixColor "-code" 后缀色(作字样副件);bannerDecoColor 分割线色(亦被
+// scrollbar 轨道 / reasoning 角色名复用,留作通用蓝色强调)。均由 applyTheme 赋值,初值 = 暗色档。
 var (
 	bannerSuffixColor color.Color = lipgloss.Color("250")
 	bannerDecoColor   color.Color = lipgloss.Color("67") // 钢蓝

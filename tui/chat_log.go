@@ -125,6 +125,15 @@ func (cl *chatLog) Reset() {
 	cl.totalBytes = 0
 }
 
+// InvalidateRender 清掉每段已缓存的 ANSI(保留 raw),强制下次 Render 按当前主题/渲染器整体重渲。
+// 用于主题切换这类"宽度没变但渲染口径变了"的场景 —— 否则 Render 会命中 ansiWidth==width 的旧缓存。
+func (cl *chatLog) InvalidateRender() {
+	for _, s := range cl.segments {
+		s.ansi = ""
+		s.ansiWidth = 0
+	}
+}
+
 // EndsWithNewline 报告最后一段是否以 \n 结尾。
 // 用于 ToolCallStart 那种"决定要不要补一个换行"的边界判断,避免每次 String() 拷贝全量。
 func (cl *chatLog) EndsWithNewline() bool {

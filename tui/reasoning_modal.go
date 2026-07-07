@@ -152,7 +152,7 @@ func (m model) reasoningModalBlock() string {
 			case row == m.reasoningModalRow && opt == cur:
 				seg = on.Render(seg)
 			case row == m.reasoningModalRow:
-				seg = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(seg)
+				seg = lipgloss.NewStyle().Foreground(softFgColor).Render(seg)
 			default:
 				seg = dim.Render(seg)
 			}

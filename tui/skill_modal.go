@@ -171,7 +171,7 @@ func (m model) skillAddModalBlock() string {
 		for i := 0; i < end; i++ {
 			r := m.skillAddResults[i]
 			marker := "  "
-			style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+			style := lipgloss.NewStyle().Foreground(softFgColor)
 			if i == m.skillAddIdx {
 				marker = "▸ "
 				style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Background(lipgloss.Color("236"))
@@ -219,7 +219,7 @@ func (m model) skillDeleteModalBlock() string {
 	rows := make([]string, 0, len(m.skillDelNames))
 	for i, name := range m.skillDelNames {
 		marker := "  "
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		style := lipgloss.NewStyle().Foreground(softFgColor)
 		if i == m.skillDelIdx {
 			marker = "▸ "
 			style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Background(lipgloss.Color("236"))
