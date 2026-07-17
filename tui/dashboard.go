@@ -25,6 +25,17 @@ func padLinesToWidth(content string, w int) string {
 	if w <= 0 {
 		return content
 	}
+	// 历史区(agent 输出、工具结果、从会话文件载入的旧消息)里残留的裸 \r 会一路
+	// 透传到 uv 渲染层:uv 把裸 \r 当作"光标回到行首"(见 ultraviolet styled.go
+	// 的 printString:遇 \r 即 x = bounds.Min.X),后续字符覆盖本行前半段,
+	// 分隔线 ┃ 被顶到列 0 或错位,于是滚到那一条旧消息(固定滚动位置)时
+	// 就整行错乱。这个 \r 隐患之前只在输入框/粘贴入口兜过,历史展示路径漏了。
+	// 这里在"按 \n 切行 + 补/截列宽"之前统一归一化(\r\n 与单独的 \r 都转成 \n),
+	// 覆盖 chat / 输入框 / 排队区全部展示内容,从源头消除。
+	if strings.ContainsRune(content, '\r') {
+		content = strings.ReplaceAll(content, "\r\n", "\n")
+		content = strings.ReplaceAll(content, "\r", "\n")
+	}
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
 		cur := lineDisplayWidth(line)
